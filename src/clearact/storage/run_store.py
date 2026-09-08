@@ -15,7 +15,9 @@ class RunStore:
     def save_run(self, run: Run) -> None:
         run.updated_at = datetime.now()
         path = self._root / f"{run.id}.json"
-        path.write_text(run.model_dump_json(indent=2), encoding="utf-8")
+        temp_path = path.with_suffix(".json.tmp")
+        temp_path.write_text(run.model_dump_json(indent=2), encoding="utf-8")
+        temp_path.replace(path)
 
     def load_run(self, run_id: str) -> Run:
         if not run_id.startswith("run_") or any(char in run_id for char in "\\/"):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 import threading
 import webbrowser
 from contextlib import suppress
@@ -59,6 +61,22 @@ class MCPImportRequest(BaseModel):
     config: dict[str, Any]
 
 
+def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    """Write configuration atomically so an interrupted save cannot corrupt it."""
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        Path(temporary).replace(path)
+    except Exception:
+        with suppress(FileNotFoundError):
+            Path(temporary).unlink()
+        raise
+
+
 def _public_mcp_servers(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Return editable connection metadata without leaking headers or env values."""
     servers = raw.get("mcp", {}).get("servers", raw.get("mcpServers", {})) or {}
@@ -104,6 +122,7 @@ async def config() -> dict:
         "defaults": settings.agent.model_dump(),
         "allow_localhost": settings.network.allow_localhost,
         "mcp_servers": _public_mcp_servers(json.loads((root / "clearact.json").read_text(encoding="utf-8"))),
+        "security": {"local_only": True, "api_keys_exposed": False},
     }
 
 
@@ -154,7 +173,7 @@ async def update_settings(request: SettingsRequest) -> dict:
     raw.setdefault("web", {})["interfaceLanguage"] = request.interface_language
     raw["agent"]["maxIterations"] = request.max_iterations
     raw["agent"]["maxToolCallsPerRun"] = request.max_tool_calls
-    config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(config_path, raw)
     return {"saved": True}
 
 
@@ -179,18 +198,36 @@ async def import_mcp_servers(request: MCPImportRequest) -> dict:
             raise HTTPException(status_code=422, detail=f"MCP stdio server {name} needs command.")
         if transport == "streamable_http" and not isinstance(server.get("url"), str):
             raise HTTPException(status_code=422, detail=f"MCP HTTP server {name} needs url.")
+        if len(name) > 80 or len(normalized) >= 50:
+            raise HTTPException(status_code=422, detail="MCP server names/count exceed the safety limits.")
+        args = server.get("args", [])
+        if not isinstance(args, list) or len(args) > 100 or not all(
+            isinstance(item, str) and len(item) <= 2000 for item in args
+        ):
+            raise HTTPException(status_code=422, detail=f"Invalid or oversized args for MCP server {name}.")
+        for field in ("env", "headers"):
+            values = server.get(field, {})
+            if values and (not isinstance(values, dict) or len(values) > 100):
+                raise HTTPException(status_code=422, detail=f"Invalid or oversized {field} for MCP server {name}.")
+            if values and not all(
+                isinstance(k, str) and isinstance(v, str) and len(k) <= 200 and len(v) <= 8000
+                for k, v in values.items()
+            ):
+                raise HTTPException(status_code=422, detail=f"Invalid {field} values for MCP server {name}.")
         normalized[name] = dict(server, transport=transport)
     with config_path.open(encoding="utf-8") as handle:
         raw = json.load(handle)
     raw.setdefault("mcp", {})["servers"] = normalized
     # Remove the alias after import so there is one canonical persisted location.
     raw.pop("mcpServers", None)
-    config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(config_path, raw)
     return {"imported": sorted(normalized), "servers": _public_mcp_servers(raw)}
 
 
 @app.get("/api/runs")
 async def runs(limit: int = 30) -> list[dict]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100.")
     store = RunStore(load_settings(cli._project_root()).data_root)
     return [
         {
@@ -252,6 +289,9 @@ async def rename_run(run_id: str, request: RenameRunRequest) -> dict:
 async def delete_run(run_id: str) -> dict:
     if not run_id.startswith("run_") or any(char in run_id for char in "\\/"):
         raise HTTPException(status_code=404, detail="Topic not found.")
+    task = _active_tasks.get(run_id)
+    if task and not task.done():
+        raise HTTPException(status_code=409, detail="Cannot delete a running topic; stop it first.")
     root = RunStore(load_settings(cli._project_root()).data_root)._root
     path, events = root / f"{run_id}.json", root / f"{run_id}.events.jsonl"
     if not path.exists():
@@ -275,6 +315,9 @@ async def start_run(request: StartRunRequest) -> dict:
 
     store = RunStore(settings.data_root)
     if request.run_id:
+        active = _active_tasks.get(request.run_id)
+        if active and not active.done():
+            raise HTTPException(status_code=409, detail="This topic is already running.")
         try:
             run = store.load_run(request.run_id)
         except (FileNotFoundError, ValueError) as exc:

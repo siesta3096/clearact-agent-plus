@@ -1,0 +1,52 @@
+{
+  "defaultProfile": "ollama-local",
+  "profiles": {
+    "ollama-local": {
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "baseUrl": "http://localhost:11434",
+      "contextWindow": 32768,
+      "capabilities": {
+        "toolCalling": "native",
+        "streaming": true,
+        "usageReporting": false
+      }
+    },
+    "openai-compatible": {
+      "provider": "openai_compatible",
+      "model": "your-model",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "contextWindow": 32768,
+      "capabilities": {
+        "toolCalling": "native",
+        "streaming": true,
+        "usageReporting": true
+      }
+    }
+  },
+  "agent": {
+    "maxIterations": 80,
+    "maxToolCallsPerRun": 240,
+    "toolTimeoutSeconds": 60,
+    "contextBudgetRatio": 0.8
+  },
+  "workspace": {
+    "defaultRoot": "workspace"
+  },
+  "network": {
+    "allowLocalhost": true
+  },
+  "policy": {
+    "defaultAutonomy": "yellow",
+    "defaultViewMode": "simple"
+  },
+  "storage": {
+    "dataRoot": "data"
+  },
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "interfaceLanguage": "zh"
+  }
+}

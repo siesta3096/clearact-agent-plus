@@ -17,7 +17,7 @@ ClearAct 是一个本地优先、可审查的轻量 Agent Runtime。模型只能
 在全新的 Python 环境中安装项目（安装后才会注册 `clearact` 命令）：
 
 ```powershell
-cd clearact-agent
+cd clearact-agent-plus
 python -m pip install -e ".[dev]"
 ```
 
@@ -29,9 +29,9 @@ python -m pip install -e ".[dev]"
 
 或者双击项目根目录中的 `启动ClearAct网关.bat`。它会自动设置 `PYTHONPATH`，不依赖 PATH 中是否存在命令行入口。
 
-编辑根目录的 `clearact.json`：选择 `defaultProfile`，并在所用云端 profile 的 `apiKey` 填入 Key。每个 profile 都可独立设置模型、接口地址和上下文窗口；本地 Ollama 无需 Key。
+首次使用请复制配置模板：`Copy-Item clearact.json.example clearact.json`。然后编辑根目录的 `clearact.json` 选择 `defaultProfile`。云端 API Key 推荐写入根目录 `.env`，不要写入 JSON；每个 profile 都可独立设置模型、接口地址和上下文窗口；本地 Ollama 无需 Key。
 
-`apiKeyEnv` 是可选的高级覆盖：若同时设置了对应的系统环境变量或 `.env` 文件变量，环境变量优先，适合 Docker、CI 或不希望 Key 写入 JSON 的场景。
+`apiKeyEnv` 指定环境变量名；系统环境变量或 `.env` 文件变量优先于 JSON 中的旧式 `apiKey` 字段，适合 Docker、CI，也避免把密钥写入仓库。
 
 ```powershell
 # 本地 Ollama 示例（先确认 ollama serve 已运行且模型已下载）
@@ -132,3 +132,50 @@ python -m ruff check src tests
 - `clearact.json`：唯一的用户运行配置（模型/API、工作目录、预算、策略和 Web 地址）。
 - `config/`：Runtime 内部的工具展示信息与风险规则。
 - `workspace/`：默认唯一可读写的业务工作区。
+
+## 安全提示
+
+请勿提交 `.env`、真实 API Key、运行记录或快照。`red` 模式会扩大文件操作范围，仅应对可信任务使用；远程 MCP 服务也应先在审批模式下验证。
+
+## 架构概览
+
+```text
+用户目标
+   │
+   ▼
+CLI / Web Console
+   │
+   ▼
+AgentRunner ── ContextBuilder ── LLM Provider
+   │
+   ├── PolicyEngine + RiskEvaluator + ApprovalGate
+   ├── ToolExecutor ── Filesystem / Web / MCP
+   └── RunStore + EventBus + Checkpoints + Snapshots
+```
+
+模型只负责提出结构化工具调用；权限判断、工具执行、超时、事件记录和快照由 Runtime 完成。网页内容和 MCP 返回值始终作为不可信的参考数据处理。
+
+## 环境诊断
+
+安装依赖后可以运行：
+
+```powershell
+clearact doctor
+```
+
+它会检查 Python 版本、配置文件、默认 workspace、数据目录、默认 Profile，以及云端 Profile 的 Key 是否可用；不会主动调用模型或联网。
+
+## Roadmap
+
+- [x] 本地优先的可审查 Agent Runtime
+- [x] 文件、网页和 MCP 工具接入
+- [x] 风险分级、审批、事件记录和写入前快照
+- [x] CLI 与本地 Web Console
+- [ ] 更完整的 MCP 连接状态与 OAuth 支持
+- [ ] 可恢复的后台任务与跨重启任务管理
+- [ ] 更丰富的 Provider 能力检测和流式输出
+- [ ] 英文文档与发布包
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。涉及工具权限、SSRF、密钥处理、MCP 隔离或审计记录的改动，请同时补充测试，并说明威胁模型和兼容性影响。

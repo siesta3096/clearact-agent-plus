@@ -72,8 +72,7 @@ def _model_settings(config: dict[str, Any]) -> dict[str, Any]:
         profile = dict(raw_profile)
         profile["base_url"] = profile.pop("baseUrl")
         profile["context_window"] = profile.pop("contextWindow")
-        if "apiKey" in profile:
-            profile["api_key"] = profile.pop("apiKey")
+        profile["api_key"] = profile.pop("apiKey", "")
         if "apiKeyEnv" in profile:
             profile["api_key_env"] = profile.pop("apiKeyEnv")
         profiles[name] = profile

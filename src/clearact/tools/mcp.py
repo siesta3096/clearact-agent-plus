@@ -13,6 +13,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from clearact.domain.errors import ToolValidationError
 from clearact.domain.models import ToolDefinition, ToolResult
 from clearact.tools.base import ToolContext
+from clearact.tools.network import resolve_url_target
 
 _NAME = re.compile(r"[^a-zA-Z0-9_-]+")
 
@@ -28,8 +29,9 @@ def mcp_tool_name(server_name: str, tool_name: str) -> str:
 class MCPManager:
     """Owns MCP transport sessions for one ClearAct run and discovers their tools."""
 
-    def __init__(self, servers: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, servers: dict[str, dict[str, Any]], *, allow_localhost: bool = False) -> None:
         self._servers = {name: dict(config) for name, config in servers.items() if config.get("enabled", True)}
+        self._allow_localhost = allow_localhost
         self._sessions: dict[str, ClientSession] = {}
         self._tools: dict[str, tuple[str, str, Any]] = {}
         self._stack = AsyncExitStack()
@@ -70,6 +72,9 @@ class MCPManager:
             url = config.get("url")
             if not isinstance(url, str) or not url.startswith(("http://", "https://")):
                 raise ValueError("streamable_http server requires an http(s) url")
+            safe, error, _ = resolve_url_target(url, allow_loopback=self._allow_localhost)
+            if not safe:
+                raise ValueError(f"Unsafe MCP URL: {error}")
             headers = config.get("headers")
             if headers is not None and (
                 not isinstance(headers, dict)

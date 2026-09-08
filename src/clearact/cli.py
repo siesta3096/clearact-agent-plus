@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -116,6 +117,38 @@ def _restore_snapshot(snapshot_id: str) -> None:
     Console().print(f"已恢复快照 {snapshot_id} 到 {target}")
 
 
+def _doctor() -> int:
+    """Validate the local installation without making network or model calls."""
+    root = _project_root()
+    _load_dotenv(root)
+    checks: list[tuple[str, bool, str]] = []
+    checks.append(("Python >= 3.12", sys.version_info >= (3, 12), sys.version.split()[0]))
+    try:
+        settings = load_settings(root)
+        checks.extend([
+            ("clearact.json", True, "loaded"),
+            ("workspace", settings.workspace_root.is_dir(), str(settings.workspace_root)),
+            ("data directory", settings.data_root.exists(), str(settings.data_root)),
+            (
+                "default profile",
+                settings.models["default_profile"] in settings.models["profiles"],
+                settings.models["default_profile"],
+            ),
+        ])
+        profile = settings.models["profiles"][settings.models["default_profile"]]
+        if profile["provider"] == "openai_compatible":
+            env_name = profile.get("api_key_env")
+            checks.append(
+                ("default API key", bool(os.getenv(env_name, "") or profile.get("api_key", "")), env_name or "apiKey")
+            )
+    except (FileNotFoundError, KeyError, ValueError, RuntimeError) as exc:
+        checks.append(("configuration", False, str(exc)))
+    console = Console()
+    for name, ok, detail in checks:
+        console.print(f"[green]PASS[/green] {name}: {detail}" if ok else f"[red]FAIL[/red] {name}: {detail}")
+    return 0 if all(ok for _, ok, _ in checks) else 1
+
+
 async def _run(
     goal: str,
     profile_name: str | None,
@@ -156,7 +189,7 @@ async def _run(
         registry.register(tool)
     # MCP tools are discovered at run start, then become ordinary registry tools.
     # They therefore use the same model loop, timeout, risk assessment, approval, event and audit paths.
-    mcp_manager = MCPManager(settings.mcp_servers)
+    mcp_manager = MCPManager(settings.mcp_servers, allow_localhost=settings.network.allow_localhost)
     await mcp_manager.connect()
     for definition in mcp_manager.definitions():
         registry.register(MCPTool(definition.name, mcp_manager))
@@ -252,6 +285,7 @@ def main() -> None:
 
     subparsers.add_parser("web", help="Start the local browser control console.")
     subparsers.add_parser("gateway", help="Start the local console and open it in your browser.")
+    subparsers.add_parser("doctor", help="Check local configuration and installation.")
 
     history_parser = subparsers.add_parser("history", help="List recent runs.")
     history_parser.add_argument("--limit", type=int, default=20)
@@ -276,6 +310,8 @@ def main() -> None:
             from clearact.webapp import start
 
             start(open_browser=args.command == "gateway")
+        elif args.command == "doctor":
+            raise SystemExit(_doctor())
         elif args.command == "history":
             _print_history(args.limit)
         elif args.command == "inspect":

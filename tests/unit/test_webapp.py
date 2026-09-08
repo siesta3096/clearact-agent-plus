@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from clearact import webapp
 
 
@@ -140,3 +142,11 @@ def test_rewind_request_discards_selected_step_and_later_history(tmp_path, monke
     saved = store.load_run(run.id)
     assert response["run_id"] == run.id
     assert [message.content for message in saved.messages] == ["s", "original", "Use official sources instead."]
+
+
+def test_runs_endpoint_rejects_unbounded_limits(monkeypatch):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(webapp.runs(limit=101))
+    assert error.value.status_code == 422
