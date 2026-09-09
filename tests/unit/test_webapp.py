@@ -150,3 +150,18 @@ def test_runs_endpoint_rejects_unbounded_limits(monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(webapp.runs(limit=101))
     assert error.value.status_code == 422
+
+
+def test_settings_endpoint_returns_profile_fields_for_form_prefill(tmp_path, monkeypatch):
+    config = {
+        "defaultProfile": "demo", "profiles": {"demo": {"provider": "openai", "model": "gpt", "baseUrl": "https://api.example", "contextWindow": 4096, "apiKey": "secret"}},
+        "agent": {"maxIterations": 2, "maxToolCallsPerRun": 3}, "workspace": {"defaultRoot": "workspace"}, "storage": {"dataRoot": "data"},
+        "network": {}, "policy": {"defaultAutonomy": "green", "defaultViewMode": "simple"}, "web": {},
+    }
+    (tmp_path / "config").mkdir(); (tmp_path / "workspace").mkdir(); (tmp_path / "data").mkdir()
+    (tmp_path / "config" / "tools.yaml").write_text("tools: {}", encoding="utf-8")
+    (tmp_path / "config" / "risk_rules.yaml").write_text("{}", encoding="utf-8")
+    (tmp_path / "clearact.json").write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(webapp.cli, "_project_root", lambda: tmp_path)
+    profile = asyncio.run(webapp.get_settings())["profiles"]["demo"]
+    assert profile == {"provider": "openai", "model": "gpt", "baseUrl": "https://api.example", "contextWindow": 4096, "hasApiKey": True}

@@ -13,7 +13,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from clearact import cli
@@ -95,8 +95,10 @@ def _public_mcp_servers(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(_ASSET_DIR / "index.html")
+async def index() -> Response:
+    response = FileResponse(_ASSET_DIR / "index.html")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.get("/assets/{filename}")
@@ -104,7 +106,9 @@ async def assets(filename: str) -> FileResponse:
     target = (_ASSET_DIR / filename).resolve()
     if target.parent != _ASSET_DIR.resolve() or not target.is_file():
         raise HTTPException(status_code=404, detail="Asset not found")
-    return FileResponse(target)
+    response = FileResponse(target)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.get("/api/config")
@@ -163,7 +167,7 @@ async def update_settings(request: SettingsRequest) -> dict:
         if name not in raw["profiles"]:
             raise HTTPException(status_code=422, detail=f"Unknown profile: {name}")
         for key in ("provider", "model", "baseUrl", "contextWindow"):
-            if key in update:
+            if key in update and update[key] is not None:
                 raw["profiles"][name][key] = update[key]
         # API Key：非空则更新，空或缺失则保留原值
         if update.get("apiKey"):

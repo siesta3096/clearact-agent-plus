@@ -40,6 +40,54 @@ $('#stop-run').onclick=async()=>{if(!activeId)return;try{await json(`/api/runs/$
 $('#guide-trigger').onclick=()=>$('#guide-dialog').showModal();$('#welcome-guide').onclick=()=>$('#guide-dialog').showModal();document.querySelectorAll('.quick-card').forEach(card=>card.onclick=()=>{$('#goal').value=card.dataset.example;$('#goal').focus()});$('#new-topic').onclick=newTopic;document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();newTopic()}});$('#goal').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('#run-form').requestSubmit()}});document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
 $('#topic-form').onsubmit=async e=>{e.preventDefault();if(topicAction.mode==='delete')await deleteRun(topicAction.id);else if($('#topic-input').value.trim())await renameRun(topicAction.id,$('#topic-input').value.trim());$('#topic-dialog').close()};
 $('#run-form').onsubmit=async e=>{e.preventDefault();const goal=$('#goal').value.trim();if(!goal)return;try{const result=await json('/api/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({goal,run_id:activeId,interface_language:language})});activeId=result.run_id;$('#goal').value='';await showRun(activeId)}catch(err){$('#feedback').textContent=err.message}};
-async function openSettings(){settings=await json('/api/settings');$('#interface-language').value=settings.interface_language||'zh';$('#mcp-server-list').textContent=Object.entries(settings.mcp_servers||{}).map(([name,s])=>`${name} · ${s.transport||'stdio'} · ${s.url||s.command||''}`).join('\n')||(language==='zh'?'尚未配置 MCP 服务。':'No MCP servers configured.');$('#mcp-import').value='';$('#mcp-feedback').textContent='';$('#default-autonomy').value=settings.default_autonomy;$('#default-iterations').value=settings.max_iterations;$('#default-tool-calls').value=settings.max_tool_calls;$('#default-profile').innerHTML=profileOptions(settings.default_profile);$('#profile-settings').innerHTML=Object.entries(settings.profiles).map(([n,p])=>`<div class="profile-card" data-profile="${escape(n)}"><strong>${escape(n)}</strong><label>Provider<input data-key="provider" value="" placeholder="${language==='zh'?'留空保持不变':'Leave blank to keep'}"></label><label>Model<input data-key="model" value="" placeholder="${language==='zh'?'留空保持不变':'Leave blank to keep'}"></label><label>Base URL<input data-key="baseUrl" value="" placeholder="${language==='zh'?'留空保持不变':'Leave blank to keep'}"></label><label>Context<input data-key="contextWindow" type="number" value="" placeholder="${language==='zh'?'留空保持不变':'Leave blank to keep'}"></label><label style="grid-column:1/-1">API Key<input data-key="apiKey" type="password" placeholder="${p.hasApiKey?(language==='zh'?'已设置，留空保持不变':'Set — leave blank to keep'):(language==='zh'?'留空表示不设置':'Leave blank if not needed')}"></label></div>`).join('');$('#settings-dialog').showModal()}
-$('#settings-trigger').onclick=openSettings;$('#mcp-import-button').onclick=async()=>{const field=$('#mcp-import'),note=$('#mcp-feedback');try{const value=JSON.parse(field.value);const result=await json('/api/mcp/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:value})});note.textContent=(language==='zh'?'已导入：':'Imported: ')+result.imported.join(', ');field.value='';settings=await json('/api/settings');$('#mcp-server-list').textContent=Object.entries(settings.mcp_servers||{}).map(([name,s])=>`${name} · ${s.transport||'stdio'} · ${s.url||s.command||''}`).join('\n')}catch(err){note.textContent=err.message}};$('#settings-form').onsubmit=async e=>{e.preventDefault();const profiles={};document.querySelectorAll('.profile-card').forEach(c=>{profiles[c.dataset.profile]={};c.querySelectorAll('[data-key]').forEach(i=>{const v=i.value.trim();if(v!=='')profiles[c.dataset.profile][i.dataset.key]=i.type==='number'?+v:v})});await json('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface_language:$('#interface-language').value,default_autonomy:$('#default-autonomy').value,max_iterations:+$('#default-iterations').value,max_tool_calls:+$('#default-tool-calls').value,default_profile:$('#default-profile').value,profiles})});$('#settings-dialog').close();await loadConfig();await loadRuns()};
+function renderProfileSettings(){
+  const root=$('#profile-settings');
+  root.replaceChildren();
+  Object.entries(settings.profiles||{}).forEach(([name,profile])=>{
+    const card=document.createElement('div');
+    card.className='profile-card';
+    card.dataset.profile=name;
+    card.innerHTML=`<strong></strong><label>Provider<input data-key="provider"></label><label>Model<input data-key="model"></label><label>Base URL<input data-key="baseUrl"></label><label>Context<input data-key="contextWindow" type="number"></label><label style="grid-column:1/-1">API Key<input data-key="apiKey" type="password"></label>`;
+    card.querySelector('strong').textContent=name;
+    const labels={provider:'Provider',model:'Model',baseUrl:'Base URL',contextWindow:'Context'};
+    Object.entries(labels).forEach(([key,label])=>{const input=card.querySelector(`[data-key="${key}"]`);input.value=profile[key]??'';input.placeholder=language==='zh'?'留空保持不变':'Leave blank to keep';});
+    const keyInput=card.querySelector('[data-key="apiKey"]');
+    keyInput.placeholder=profile.hasApiKey?(language==='zh'?'已设置，留空保持不变':'Set — leave blank to keep'):(language==='zh'?'留空表示不设置':'Leave blank if not needed');
+    root.appendChild(card);
+  });
+}
+async function openSettings(){
+  settings=await json('/api/settings');
+  $('#interface-language').value=settings.interface_language||'zh';
+  $('#default-autonomy').value=settings.default_autonomy;
+  $('#default-iterations').value=settings.max_iterations;
+  $('#default-tool-calls').value=settings.max_tool_calls;
+  $('#default-profile').innerHTML=profileOptions(settings.default_profile);
+  renderProfileSettings();
+  $('#settings-dialog').showModal();
+}
+$('#settings-trigger').onclick=openSettings;
+$('#save-settings-button').onclick=()=>$('#settings-form').requestSubmit();
+$('#settings-form').onsubmit=async e=>{
+  e.preventDefault();
+  const profiles={};
+  document.querySelectorAll('.profile-card').forEach(card=>{
+    const profile={};
+    card.querySelectorAll('[data-key]').forEach(input=>{
+      const value=input.value;
+      if(input.dataset.key==='apiKey'){if(value.trim())profile.apiKey=value.trim();return;}
+      if(input.type==='number'){if(value.trim())profile[input.dataset.key]=Number(value);return;}
+      profile[input.dataset.key]=value.trim();
+    });
+    profiles[card.dataset.profile]=profile;
+  });
+  try{
+    await json('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({interface_language:$('#interface-language').value,default_autonomy:$('#default-autonomy').value,max_iterations:Number($('#default-iterations').value),max_tool_calls:Number($('#default-tool-calls').value),default_profile:$('#default-profile').value,profiles})});
+    $('#settings-feedback').textContent=language==='zh'?'已保存':'Saved';
+    settings=await json('/api/settings');
+    renderProfileSettings();
+  }catch(err){$('#settings-feedback').textContent=err.message}
+};
 (async()=>{await loadConfig();await loadRuns();setInterval(async()=>{await loadRuns();if(activeId){const d=await json(`/api/runs/${activeId}`);renderRun(d)}},2500)})().catch(e=>$('#feedback').textContent=e.message);
+
+$('#mcp-import-button').onclick=async()=>{const field=$('#mcp-import'),note=$('#mcp-feedback');try{const value=JSON.parse(field.value);const result=await json('/api/mcp/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:value})});note.textContent=(language==='zh'?'已导入：':'Imported: ')+result.imported.join(', ');field.value='';settings=await json('/api/settings');$('#mcp-server-list').textContent=Object.entries(settings.mcp_servers||{}).map(([name,s])=>`${name} · ${s.transport||'stdio'} · ${s.url||s.command||''}`).join('\n')}catch(err){note.textContent=err.message}};
