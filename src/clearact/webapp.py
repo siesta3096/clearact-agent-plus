@@ -456,3 +456,22 @@ def start(host: str | None = None, port: int | None = None, open_browser: bool =
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     print(f"ClearAct gateway is running at {url}")
     uvicorn.run(app, host=selected_host, port=selected_port, log_level="warning")
+
+
+def _choose_directory() -> str | None:
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return filedialog.askdirectory(title="选择 ClearAct 工作文件夹") or None
+    finally:
+        root.destroy()
+
+
+@app.post("/api/select-directory")
+async def select_directory() -> dict[str, str | None]:
+    """Open a native Windows folder picker and return the selected path."""
+    return {"path": await asyncio.to_thread(_choose_directory)}
