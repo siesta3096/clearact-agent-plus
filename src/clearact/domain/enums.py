@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     WHITE = "white"
     GREEN = "green"
     YELLOW = "yellow"
@@ -12,7 +12,7 @@ class RiskLevel(str, Enum):
         return list(type(self)).index(self)
 
 
-class RunStatus(str, Enum):
+class RunStatus(StrEnum):
     CREATED = "created"
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
@@ -22,7 +22,7 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class Stage(str, Enum):
+class Stage(StrEnum):
     UNDERSTAND = "understand"
     COLLECT = "collect"
     ANALYZE = "analyze"
@@ -31,12 +31,12 @@ class Stage(str, Enum):
     DELIVER = "deliver"
 
 
-class DecisionOutcome(str, Enum):
+class DecisionOutcome(StrEnum):
     ALLOW = "allow"
     REQUIRE_APPROVAL = "require_approval"
     DENY = "deny"
 
 
-class ViewMode(str, Enum):
+class ViewMode(StrEnum):
     SIMPLE = "simple"
     EXPERT = "expert"
