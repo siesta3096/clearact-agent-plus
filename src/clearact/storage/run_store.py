@@ -54,3 +54,18 @@ class RunStore:
             "".join(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n" for event in kept),
             encoding="utf-8",
         )
+
+    def prune_events_to_actions(self, run_id: str, action_ids: set[str]) -> None:
+        """Keep run-level history plus events belonging to retained actions."""
+        events = self.load_events(run_id)
+        kept = [
+            event
+            for event in events
+            if event.action_id in action_ids
+            or (event.action_id is None and event.type in {"run.started"})
+        ]
+        path = self._root / f"{run_id}.events.jsonl"
+        path.write_text(
+            "".join(json.dumps(event.model_dump(mode="json"), ensure_ascii=False) + "\n" for event in kept),
+            encoding="utf-8",
+        )

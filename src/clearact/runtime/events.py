@@ -65,5 +65,42 @@ def model_reasoning(run: Run, detail: str, stage: Stage) -> RunEvent:
     )
 
 
+def model_retrying(
+    run: Run,
+    *,
+    attempt: int,
+    max_attempts: int,
+    delay_seconds: float,
+    detail: str,
+    error_type: str,
+) -> RunEvent:
+    language = run.execution.interface_language or "zh"
+    title = "模型连接中断，正在自动重连" if language == "zh" else "Model connection interrupted; reconnecting"
+    return RunEvent(
+        type="model.retrying",
+        run_id=run.id,
+        stage=Stage.UNDERSTAND,
+        title=title,
+        detail=detail,
+        data={
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "delay_seconds": delay_seconds,
+            "error_type": error_type,
+        },
+    )
+
+
+def model_recovered(run: Run, attempts: int) -> RunEvent:
+    language = run.execution.interface_language or "zh"
+    return RunEvent(
+        type="model.recovered",
+        run_id=run.id,
+        stage=Stage.UNDERSTAND,
+        title="模型连接已恢复" if language == "zh" else "Model connection restored",
+        data={"attempts": attempts},
+    )
+
+
 def run_completed(run: Run) -> RunEvent:
     return RunEvent(type="run.completed", run_id=run.id, title="任务已完成", stage=Stage.DELIVER)

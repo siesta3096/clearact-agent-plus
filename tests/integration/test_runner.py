@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 
 from clearact.context.budget import ContextBudget
@@ -10,6 +11,7 @@ from clearact.domain.models import Action, LLMResponse, RiskAssessment, Run, Too
 from clearact.runtime.approvals import DenyAllApprovalGate
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.executor import ToolExecutor
+from clearact.runtime.model_retry import ModelRequestError, ModelServiceUnavailableError
 from clearact.runtime.policy import PolicyEngine
 from clearact.runtime.risk import RiskEvaluator
 from clearact.runtime.runner import AgentRunner
@@ -37,6 +39,19 @@ class ScriptedProvider:
 
     async def chat(self, messages, tools) -> LLMResponse:
         return next(self._responses)
+
+
+class FlakyProvider:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+        self.calls = 0
+
+    async def chat(self, messages, tools):
+        self.calls += 1
+        outcome = next(self.outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
 
 def build_runner(root: Path, provider: ScriptedProvider, *, max_tool_calls: int = 4) -> AgentRunner:
@@ -77,6 +92,128 @@ def test_runner_preserves_assistant_tool_call_and_completes(workspace):
     assert (workspace / "answer.txt").read_text(encoding="utf-8") == "done"
     assert run.messages[0].tool_calls == [action]
     assert run.messages[1].tool_call_id == "call_123"
+
+
+def test_runner_retries_transient_model_disconnect_and_keeps_run_active(workspace):
+    async def execute():
+        request = httpx.Request("POST", "https://example.test/chat/completions")
+        provider = FlakyProvider(
+            [
+                httpx.RemoteProtocolError("server disconnected", request=request),
+                httpx.ReadTimeout("timed out", request=request),
+                LLMResponse(content="recovered"),
+            ]
+        )
+        registry = ToolRegistry()
+        store = RunStore(workspace / "data")
+        events = []
+        bus = EventBus()
+        bus.subscribe_sync(events.append)
+        runner = AgentRunner(
+            provider=provider,
+            registry=registry,
+            context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+            risk_evaluator=RiskEvaluator(workspace, {}),
+            policy_engine=PolicyEngine(),
+            approval_gate=DenyAllApprovalGate(),
+            executor=ToolExecutor(registry, 1),
+            event_bus=bus,
+            run_store=store,
+            checkpoint_store=CheckpointStore(workspace / "data"),
+            tool_context=ToolContext(workspace),
+            stage_mapper=StageMapper({}),
+            max_iterations=2,
+            max_tool_calls=2,
+            model_retry_attempts=3,
+            retry_base_delay=0,
+        )
+        run = Run(goal="test")
+        final = await runner.run(run)
+        return provider, run, final, events
+
+    provider, run, final, events = asyncio.run(execute())
+
+    assert provider.calls == 3
+    assert final == "recovered"
+    assert run.status is RunStatus.COMPLETED
+    assert [event.type for event in events].count("model.retrying") == 2
+    assert any(event.type == "model.recovered" for event in events)
+
+
+def test_runner_does_not_retry_deterministic_model_error(workspace):
+    async def execute():
+        provider = FlakyProvider([ValueError("invalid response")])
+        runner = build_runner(workspace, provider)
+        run = Run(goal="test")
+        with pytest.raises(ValueError, match="invalid response"):
+            await runner.run(run)
+        return provider, run
+
+    provider, run = asyncio.run(execute())
+
+    assert provider.calls == 1
+    assert run.status is RunStatus.FAILED
+
+
+def test_runner_explains_unauthorized_model_response_without_retrying(workspace):
+    async def execute():
+        request = httpx.Request("POST", "http://localhost:1235/api/chat")
+        response = httpx.Response(401, request=request)
+        error = httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        provider = FlakyProvider([error])
+        runner = build_runner(workspace, provider)
+        run = Run(goal="test")
+        with pytest.raises(ModelRequestError, match="请检查接口类型和 API Key"):
+            await runner.run(run)
+        return provider
+
+    provider = asyncio.run(execute())
+
+    assert provider.calls == 1
+
+
+def test_exhausted_model_retries_preserve_completed_tool_result(workspace):
+    async def execute():
+        action = Action(id="call_once", tool_name="write_file", arguments={"path": "kept.txt", "content": "kept"})
+        request = httpx.Request("POST", "https://example.test/chat/completions")
+        disconnects = [
+            httpx.RemoteProtocolError("server disconnected", request=request)
+            for _ in range(3)
+        ]
+        provider = FlakyProvider([LLMResponse(tool_calls=[action]), *disconnects])
+        registry = ToolRegistry()
+        registry.register(WriteFileTool())
+        runner = AgentRunner(
+            provider=provider,
+            registry=registry,
+            context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+            risk_evaluator=RiskEvaluator(workspace, {}),
+            policy_engine=PolicyEngine(),
+            approval_gate=DenyAllApprovalGate(),
+            executor=ToolExecutor(registry, 1),
+            event_bus=EventBus(),
+            run_store=RunStore(workspace / "data"),
+            checkpoint_store=CheckpointStore(workspace / "data"),
+            tool_context=ToolContext(workspace),
+            stage_mapper=StageMapper({}),
+            max_iterations=3,
+            max_tool_calls=3,
+            model_retry_attempts=3,
+            retry_base_delay=0,
+        )
+        run = Run(goal="write once", policy=UserPolicy(autonomy_threshold=RiskLevel.GREEN))
+        with pytest.raises(ModelServiceUnavailableError, match="已自动尝试 3 次"):
+            await runner.run(run)
+        return provider, run
+
+    provider, run = asyncio.run(execute())
+
+    assert provider.calls == 4
+    assert (workspace / "kept.txt").read_text(encoding="utf-8") == "kept"
+    completed = [message for message in run.messages if message.tool_call_id == "call_once"]
+    assert len(completed) == 1
+    assert completed[0].metadata["status"] == "succeeded"
+    assert run.status is RunStatus.FAILED
 
 
 def test_runner_executes_every_visible_search_in_one_planning_turn(workspace):

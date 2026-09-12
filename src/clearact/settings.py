@@ -38,6 +38,7 @@ class AppSettings(BaseModel):
     agent: AgentSettings
     network: NetworkSettings
     default_autonomy: RiskLevel
+    default_capability_rules: dict[str, str]
     default_view_mode: ViewMode
     models: dict[str, Any]
     tools: dict[str, Any]
@@ -92,6 +93,11 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
         agent=AgentSettings(**config["agent"]),
         network=NetworkSettings(**config.get("network", {})),
         default_autonomy=RiskLevel(config["policy"]["defaultAutonomy"]),
+        default_capability_rules={
+            str(name): str(rule)
+            for name, rule in config.get("policy", {}).get("defaultCapabilities", {}).items()
+            if rule in {"allow", "ask", "deny"}
+        },
         default_view_mode=ViewMode(config["policy"]["defaultViewMode"]),
         models=_model_settings(config),
         tools=tools["tools"],

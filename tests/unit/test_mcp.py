@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from clearact.domain.enums import RiskLevel
 from clearact.domain.models import Action
@@ -75,3 +76,46 @@ def test_mcp_connection_timeout_rejects_invalid_values():
 
     assert manager.errors["invalid"].startswith("ValueError:")
     asyncio.run(manager.close())
+
+
+def test_mcp_servers_are_connected_concurrently(monkeypatch):
+    started = 0
+    both_started = asyncio.Event()
+
+    class Session:
+        async def list_tools(self):
+            return SimpleNamespace(tools=[])
+
+    async def coordinated_connect(_self, _config, _stack):
+        nonlocal started
+        started += 1
+        if started == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=0.5)
+        return Session()
+
+    monkeypatch.setattr(MCPManager, "_connect_one", coordinated_connect)
+
+    async def exercise():
+        manager = MCPManager({"first": {}, "second": {}})
+        await manager.connect()
+        await manager.close()
+        return manager
+
+    manager = asyncio.run(exercise())
+
+    assert started == 2
+    assert manager.errors == {}
+
+
+def test_mcp_risk_hints_distinguish_read_only_and_destructive(workspace):
+    read = "mcp__demo__read"
+    remove = "mcp__demo__remove"
+    evaluator = RiskEvaluator(
+        workspace,
+        {},
+        {read: {"read_only": True}, remove: {"destructive": True}},
+    )
+
+    assert evaluator.assess(Action(tool_name=read, arguments={})).category == "mcp_read"
+    assert evaluator.assess(Action(tool_name=remove, arguments={})).category == "destructive"

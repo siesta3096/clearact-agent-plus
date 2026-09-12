@@ -31,7 +31,7 @@ def mcp_tool_name(server_name: str, tool_name: str) -> str:
 
 def _connect_timeout(config: dict[str, Any]) -> float:
     value = config.get("connectTimeoutSeconds", _DEFAULT_CONNECT_TIMEOUT_SECONDS)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError("MCP connectTimeoutSeconds must be a number of seconds.")
     timeout = float(value)
     if not 0 < timeout <= _MAX_CONNECT_TIMEOUT_SECONDS:
@@ -48,10 +48,17 @@ class MCPManager:
         self._sessions: dict[str, ClientSession] = {}
         self._tools: dict[str, tuple[str, str, Any]] = {}
         self._stack = AsyncExitStack()
+        self._server_tasks: list[asyncio.Task] = []
+        self._server_stop_events: list[asyncio.Event] = []
         self.errors: dict[str, str] = {}
 
     async def connect(self) -> None:
-        for name, config in self._servers.items():
+        async def own_server(
+            name: str,
+            config: dict[str, Any],
+            ready: asyncio.Future,
+            stop: asyncio.Event,
+        ) -> None:
             server_stack = AsyncExitStack()
             try:
                 async with asyncio.timeout(_connect_timeout(config)):
@@ -60,18 +67,38 @@ class MCPManager:
                 discovered: dict[str, tuple[str, str, Any]] = {}
                 for remote in listed.tools:
                     local = mcp_tool_name(name, remote.name)
-                    if local in self._tools or local in discovered:
+                    if local in discovered:
                         raise ValueError(f"Duplicate MCP tool name: {local}")
                     discovered[local] = (name, remote.name, remote)
-                self._sessions[name] = session
-                self._tools.update(discovered)
-                self._stack.push_async_callback(server_stack.aclose)
+                ready.set_result((name, session, discovered, None))
+                await stop.wait()
             except asyncio.CancelledError:
-                await server_stack.aclose()
                 raise
             except Exception as exc:
+                if not ready.done():
+                    ready.set_result((name, None, {}, f"{type(exc).__name__}: {exc}"))
+            finally:
                 await server_stack.aclose()
-                self.errors[name] = f"{type(exc).__name__}: {exc}"
+
+        loop = asyncio.get_running_loop()
+        ready_futures = []
+        for name, config in self._servers.items():
+            ready = loop.create_future()
+            stop = asyncio.Event()
+            self._server_stop_events.append(stop)
+            self._server_tasks.append(asyncio.create_task(own_server(name, config, ready, stop)))
+            ready_futures.append(ready)
+        results = await asyncio.gather(*ready_futures)
+        for name, session, discovered, error in results:
+            if error:
+                self.errors[name] = error
+                continue
+            duplicates = set(self._tools).intersection(discovered)
+            if duplicates:
+                self.errors[name] = f"ValueError: Duplicate MCP tool name: {sorted(duplicates)[0]}"
+                continue
+            self._sessions[name] = session
+            self._tools.update(discovered)
 
     async def _connect_one(
         self, config: dict[str, Any], stack: AsyncExitStack | None = None
@@ -128,6 +155,20 @@ class MCPManager:
             for local_name, (server, remote_name, remote) in self._tools.items()
         ]
 
+    def risk_hints(self) -> dict[str, dict[str, bool]]:
+        hints: dict[str, dict[str, bool]] = {}
+        for local_name, (_, _, remote) in self._tools.items():
+            annotations = getattr(remote, "annotations", None)
+            hints[local_name] = {
+                "read_only": bool(
+                    getattr(annotations, "readOnlyHint", getattr(annotations, "read_only_hint", False))
+                ),
+                "destructive": bool(
+                    getattr(annotations, "destructiveHint", getattr(annotations, "destructive_hint", False))
+                ),
+            }
+        return hints
+
     async def call(self, local_name: str, arguments: dict[str, Any]) -> ToolResult:
         try:
             server, remote_name, _ = self._tools[local_name]
@@ -156,6 +197,12 @@ class MCPManager:
         )
 
     async def close(self) -> None:
+        for stop in self._server_stop_events:
+            stop.set()
+        if self._server_tasks:
+            await asyncio.gather(*self._server_tasks, return_exceptions=True)
+        self._server_tasks.clear()
+        self._server_stop_events.clear()
         await self._stack.aclose()
 
 

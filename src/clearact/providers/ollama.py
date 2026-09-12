@@ -6,9 +6,10 @@ from clearact.domain.models import Action, ChatMessage, LLMResponse, ToolDefinit
 
 
 class OllamaProvider:
-    def __init__(self, model: str, base_url: str) -> None:
+    def __init__(self, model: str, base_url: str, api_key: str = "") -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
 
     @staticmethod
     def _message_payload(message: ChatMessage) -> dict:
@@ -26,8 +27,9 @@ class OllamaProvider:
             "messages": [self._message_payload(message) for message in messages],
             "tools": [{"type": "function", "function": tool.model_dump()} for tool in tools],
         }
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(f"{self._base_url}/api/chat", json=payload)
+            response = await client.post(f"{self._base_url}/api/chat", json=payload, headers=headers)
             response.raise_for_status()
         data = response.json()
         message = data.get("message", {})

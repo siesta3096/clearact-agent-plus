@@ -39,6 +39,17 @@
   },
   "policy": {
     "defaultAutonomy": "yellow",
+    "defaultCapabilities": {
+      "local_read": "allow",
+      "web_read": "allow",
+      "workspace_create": "allow",
+      "workspace_modify": "allow",
+      "mcp_read": "allow",
+      "mcp_write": "ask",
+      "outside_write": "ask",
+      "destructive": "ask",
+      "other": "ask"
+    },
     "defaultViewMode": "simple"
   },
   "storage": {

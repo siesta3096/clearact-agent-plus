@@ -39,11 +39,12 @@ def test_ollama_provider_translates_native_tool_calls(monkeypatch):
         async def __aexit__(self, *args):
             return None
 
-        async def post(self, url, json):
-            return await handler(httpx.Request("POST", url, json=json))
+        async def post(self, url, json, headers=None):
+            captured["headers"] = headers
+            return await handler(httpx.Request("POST", url, json=json, headers=headers))
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
-    provider = OllamaProvider("qwen", "http://127.0.0.1:11434/")
+    provider = OllamaProvider("qwen", "http://127.0.0.1:11434/", api_key="local-secret")
     tools = [ToolDefinition(name="write_file", description="write", parameters={"type": "object"})]
 
     response = asyncio.run(provider.chat([ChatMessage(role="user", content="create a file")], tools))
@@ -53,3 +54,4 @@ def test_ollama_provider_translates_native_tool_calls(monkeypatch):
     assert response.tool_calls[0].tool_name == "write_file"
     assert response.tool_calls[0].arguments == {"path": "answer.txt"}
     assert response.usage == {"prompt_tokens": 12, "completion_tokens": 4}
+    assert captured["headers"] == {"Authorization": "Bearer local-secret"}

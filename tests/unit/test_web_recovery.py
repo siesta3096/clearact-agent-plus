@@ -8,7 +8,15 @@ from fastapi import HTTPException
 
 from clearact import webapp
 from clearact.domain.enums import RiskLevel, RunStatus
-from clearact.domain.models import Action, ChatMessage, LLMResponse, Run, UserPolicy
+from clearact.domain.models import (
+    Action,
+    ChatMessage,
+    LLMResponse,
+    Run,
+    UserPolicy,
+    WorkflowPlanItem,
+    WorkflowStep,
+)
 from clearact.storage.run_store import RunStore
 
 
@@ -269,3 +277,70 @@ def test_manual_rename_survives_title_response_and_further_execution(web_environ
         assert saved.messages[-1].content == "result"
 
     asyncio.run(scenario())
+
+
+def test_step_rewind_reuses_earlier_phase_and_records_branch(web_environment, monkeypatch):
+    _, store = web_environment
+    first = Action(id="first", tool_name="read_file", arguments={"path": "source.txt"})
+    second = Action(id="second", tool_name="web_search", arguments={"query": "new facts"})
+    run = Run(
+        goal="report",
+        policy=UserPolicy(),
+        messages=[
+            ChatMessage(role="system", content="system"),
+            ChatMessage(role="user", content="report"),
+            ChatMessage(role="assistant", tool_calls=[first]),
+            ChatMessage(role="tool", name="read_file", tool_call_id=first.id, content="retained"),
+            ChatMessage(role="assistant", tool_calls=[second]),
+            ChatMessage(role="tool", name="web_search", tool_call_id=second.id, content="discarded"),
+        ],
+        workflow_plan=[
+            WorkflowPlanItem(id="read", title="读取资料", summary="读取本地资料"),
+            WorkflowPlanItem(id="research", title="补充检索", summary="检索外部资料"),
+        ],
+        workflow_steps=[
+            WorkflowStep(id="understand", title="理解任务", summary="plan", start_message_index=2),
+            WorkflowStep(
+                id="read-step",
+                title="读取资料",
+                summary="读取本地资料",
+                plan_item_id="read",
+                action_ids=[first.id],
+                start_message_index=2,
+            ),
+            WorkflowStep(
+                id="research-step",
+                title="补充检索",
+                summary="检索外部资料",
+                plan_item_id="research",
+                action_ids=[second.id],
+                start_message_index=4,
+            ),
+        ],
+    )
+    store.save_run(run)
+
+    async def execute(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(webapp.cli, "_run", execute)
+
+    async def scenario():
+        await webapp.start_run(
+            webapp.StartRunRequest(
+                goal="只看官方来源",
+                run_id=run.id,
+                rewind_step_id="research-step",
+            )
+        )
+        await finish_run(run.id)
+
+    asyncio.run(scenario())
+    saved = store.load_run(run.id)
+    assert [message.content for message in saved.messages] == ["system", "report", None, "retained", "只看官方来源"]
+    assert [step.id for step in saved.workflow_steps] == ["understand", "read-step"]
+    assert saved.workflow_plan == []
+    revision = saved.workflow_revisions[-1]
+    assert revision.from_step_id == "research-step"
+    assert revision.reused_step_ids == ["understand", "read-step"]
+    assert revision.discarded_message_count == 2

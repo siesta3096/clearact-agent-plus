@@ -39,12 +39,41 @@ class ToolDefinition(BaseModel):
 
 
 class WorkflowStep(BaseModel):
-    """A user-visible phase explicitly declared by the model during a run."""
+    """A user-visible execution phase with a stable rewind boundary."""
 
     id: str = Field(default_factory=lambda: new_id("step"))
     title: str
     summary: str
+    plan_item_id: str | None = None
+    kind: str = "general"
+    # Completed is the migration-safe default for ledgers created before phase status existed.
+    status: str = "completed"
     action_ids: list[str] = Field(default_factory=list)
+    start_message_index: int | None = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    completed_at: datetime | None = None
+
+
+class WorkflowPlanItem(BaseModel):
+    """A planned phase. Cards are revealed only when execution reaches it."""
+
+    id: str = Field(default_factory=lambda: new_id("plan"))
+    title: str
+    summary: str
+    kind: str = "general"
+
+
+class WorkflowRevision(BaseModel):
+    """Audit record for a user-requested branch from an earlier phase."""
+
+    id: str = Field(default_factory=lambda: new_id("rev"))
+    from_step_id: str
+    feedback: str
+    reused_step_ids: list[str] = Field(default_factory=list)
+    discarded_message_count: int = 0
+    restored_snapshot_ids: list[str] = Field(default_factory=list)
+    rollback_warnings: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
 
 
 class LLMResponse(BaseModel):
@@ -68,6 +97,7 @@ class RiskAssessment(BaseModel):
     level: RiskLevel
     hard_stop: bool = False
     reasons: list[str] = Field(default_factory=list)
+    category: str = "other"
 
 
 class UserPolicy(BaseModel):
@@ -76,6 +106,9 @@ class UserPolicy(BaseModel):
     allow_read: bool = True
     allow_write: bool = True
     allow_web: bool = True
+    # Fine-grained rules take precedence over the legacy colour threshold.
+    # Values are allow / ask / deny. An empty mapping preserves old ledgers.
+    capability_rules: dict[str, str] = Field(default_factory=dict)
 
 
 class PolicyDecision(BaseModel):
@@ -107,6 +140,8 @@ class Run(BaseModel):
     # The first card is always task understanding. Every later card is created
     # only when the model declares a meaningful next phase.
     workflow_steps: list[WorkflowStep] = Field(default_factory=list)
+    workflow_plan: list[WorkflowPlanItem] = Field(default_factory=list)
+    workflow_revisions: list[WorkflowRevision] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

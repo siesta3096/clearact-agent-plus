@@ -38,3 +38,20 @@ def test_hard_stop_requires_approval_even_at_red_autonomy():
     )
 
     assert decision.outcome is DecisionOutcome.REQUIRE_APPROVAL
+
+
+def test_capability_rule_overrides_coarse_colour_threshold():
+    policy = UserPolicy(
+        autonomy_threshold=RiskLevel.RED,
+        capability_rules={"workspace_modify": "ask", "mcp_write": "deny"},
+    )
+
+    modify = PolicyEngine().decide(
+        RiskAssessment(level=RiskLevel.YELLOW, category="workspace_modify"), policy, "write_file"
+    )
+    external = PolicyEngine().decide(
+        RiskAssessment(level=RiskLevel.YELLOW, category="mcp_write"), policy, "mcp__demo__update"
+    )
+
+    assert modify.outcome is DecisionOutcome.REQUIRE_APPROVAL
+    assert external.outcome is DecisionOutcome.DENY
