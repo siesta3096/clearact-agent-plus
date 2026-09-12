@@ -4,7 +4,7 @@ from clearact.domain.enums import RiskLevel
 from clearact.domain.models import Action
 from clearact.runtime.policy import PolicyEngine
 from clearact.runtime.risk import RiskEvaluator
-from clearact.tools.mcp import MCPTool, mcp_tool_name
+from clearact.tools.mcp import MCPManager, MCPTool, mcp_tool_name
 
 
 def test_mcp_name_is_namespaced_and_risk_is_controlled(workspace):
@@ -52,3 +52,26 @@ def test_mcp_tool_adapts_discovered_definition_and_result():
     result = asyncio.run(tool.execute({"value": "hello"}, None, "act_1"))
     assert result.action_id == "act_1"
     assert result.content == "hello"
+
+
+def test_mcp_connection_timeout_is_isolated(monkeypatch):
+    async def stalled_connect(_self, _config, _stack):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(MCPManager, "_connect_one", stalled_connect)
+    manager = MCPManager({"slow": {"connectTimeoutSeconds": 0.01}})
+
+    asyncio.run(manager.connect())
+
+    assert manager.definitions() == []
+    assert manager.errors["slow"].startswith("TimeoutError:")
+    asyncio.run(manager.close())
+
+
+def test_mcp_connection_timeout_rejects_invalid_values():
+    manager = MCPManager({"invalid": {"connectTimeoutSeconds": 0}})
+
+    asyncio.run(manager.connect())
+
+    assert manager.errors["invalid"].startswith("ValueError:")
+    asyncio.run(manager.close())

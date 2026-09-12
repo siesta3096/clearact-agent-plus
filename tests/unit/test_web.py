@@ -6,6 +6,7 @@ import pytest
 
 from clearact.domain.errors import ToolValidationError
 from clearact.tools.base import ToolContext
+from clearact.tools.network import PinnedNetworkBackend, client_kwargs
 from clearact.tools.web import FetchUrlTool, WebSearchTool
 
 
@@ -80,6 +81,33 @@ def test_fetch_blocks_localhost_when_context_disallows_it(workspace):
                 {"url": "http://127.0.0.1:9999"}, ToolContext(workspace, allow_localhost=False), "act_local"
             )
         )
+
+
+def test_pinned_backend_connects_to_the_validated_address(monkeypatch):
+    calls = []
+
+    class Backend:
+        async def connect_tcp(self, host, port, **_kwargs):
+            calls.append((host, port))
+            return object()
+
+    monkeypatch.setattr(
+        "clearact.tools.network.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("203.0.113.8", 0))],
+    )
+    result = asyncio.run(PinnedNetworkBackend(backend=Backend()).connect_tcp(b"example.test", 443))
+
+    assert result is not None
+    assert calls == [("203.0.113.8", 443)]
+
+
+def test_safe_fetch_client_ignores_environment_proxies(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+
+    options = client_kwargs(timeout=10, allow_loopback=False)
+
+    assert options["trust_env"] is False
+    assert "mounts" not in options
 
 
 def test_fetch_falls_back_to_local_readability_and_marks_content_untrusted(monkeypatch, workspace):

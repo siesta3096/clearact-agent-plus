@@ -13,8 +13,8 @@ class _FilesystemTool:
         candidate = Path(raw_path).expanduser()
         # Never let an unspecified/relative path escape the configured workspace.
         target = candidate.resolve() if candidate.is_absolute() else (context.workspace_root / candidate).resolve()
-        if not self._within(target, context.workspace_root) and context.autonomy == "green":
-            raise ScopeViolationError("Green mode only permits files inside the workspace.")
+        if not self._within(target, context.workspace_root) and context.autonomy in {"white", "green"}:
+            raise ScopeViolationError("White and green modes only permit files inside the workspace.")
         if writing and self._is_protected_system_path(target):
             raise ScopeViolationError("Writing system locations is blocked in every autonomy mode.")
         return target

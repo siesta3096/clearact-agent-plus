@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import DecisionOutcome, RunStatus, Stage
-from clearact.domain.models import ChatMessage, Run, WorkflowStep
+from clearact.domain.models import Action, ChatMessage, Run, WorkflowStep
 from clearact.providers.base import LLMProvider
 from clearact.runtime.approvals import ApprovalGate
 from clearact.runtime.checkpoints import create_checkpoint
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.events import (
     action_completed,
+    action_failed,
     action_started,
     approval_required,
     model_reasoning,
@@ -62,10 +65,33 @@ class AgentRunner:
     async def run(self, run: Run) -> str:
         try:
             return await self._run_loop(run)
-        except Exception:
-            if run.status in {RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL}:
+        except asyncio.CancelledError:
+            self._record_unfinished_actions(
+                run,
+                status="cancelled",
+                content=(
+                    "Action was cancelled before a final result was available. "
+                    "Its side effects may be incomplete; verify before retrying."
+                ),
+                metadata={"reason": "run_cancelled", "side_effects": "unknown"},
+            )
+            if run.status in {RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED}:
+                transition(run, RunStatus.CANCELLED)
+            self._run_store.save_run(run)
+            raise
+        except Exception as exc:
+            self._record_unfinished_actions(
+                run,
+                status="failed",
+                content=(
+                    "Action was not completed because the run stopped: "
+                    f"{type(exc).__name__}: {exc}. Verify side effects before retrying."
+                ),
+                metadata={"reason": "run_failed", "error_type": type(exc).__name__, "error": str(exc)},
+            )
+            if run.status in {RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED}:
                 transition(run, RunStatus.FAILED)
-                self._run_store.save_run(run)
+            self._run_store.save_run(run)
             raise
 
     async def _run_loop(self, run: Run) -> str:
@@ -119,102 +145,164 @@ class AgentRunner:
                 stage, _, _ = self._stage_mapper.map(first_action, assessment.level)
                 await self._event_bus.publish(model_reasoning(run, reasoning, stage))
             recent_tool_names = set()
-            for action in accepted_actions:
-                tool_call_count += 1
-                if tool_call_count > self._max_tool_calls:
-                    raise RuntimeError(f"Agent reached the maximum tool-call limit ({self._max_tool_calls}).")
-                recent_tool_names.add(action.tool_name)
-                if action.tool_name == "declare_workflow_step":
-                    run.messages.append(
-                        ChatMessage(
-                            role="tool",
-                            name=action.tool_name,
-                            tool_call_id=action.id,
-                            content="Workflow step recorded. Continue with this phase.",
+            try:
+                for action in accepted_actions:
+                    tool_call_count += 1
+                    if tool_call_count > self._max_tool_calls:
+                        raise RuntimeError(f"Agent reached the maximum tool-call limit ({self._max_tool_calls}).")
+                    recent_tool_names.add(action.tool_name)
+                    if action.tool_name == "declare_workflow_step":
+                        run.messages.append(
+                            ChatMessage(
+                                role="tool",
+                                name=action.tool_name,
+                                tool_call_id=action.id,
+                                content="Workflow step recorded. Continue with this phase.",
+                            )
                         )
-                    )
-                    self._run_store.save_run(run)
-                    continue
-                assessment = self._risk_evaluator.assess(action)
-                decision = self._policy_engine.decide(assessment, run.policy, action.tool_name)
-                stage, title, detail = self._stage_mapper.map(action, assessment.level)
-                if stage.value == "prepare" and "prepare" not in run.stage_notes:
-                    await self._create_stage_note(run, "prepare")
-                if decision.outcome == DecisionOutcome.DENY:
-                    result_content = f"Action denied: {decision.reason}"
-                    run.messages.append(
-                        ChatMessage(
-                            role="tool",
-                            name=action.tool_name,
-                            tool_call_id=action.id,
-                            content=result_content,
-                            metadata={"status": "denied", "reason": decision.reason},
-                        )
-                    )
-                    continue
-                if decision.outcome == DecisionOutcome.REQUIRE_APPROVAL:
-                    transition(run, RunStatus.WAITING_APPROVAL)
-                    await self._event_bus.publish(approval_required(run, action, assessment.level, decision.reason))
-                    granted = await self._approval_gate.request(action, assessment)
-                    if run.status == RunStatus.WAITING_APPROVAL:
-                        transition(run, RunStatus.RUNNING)
-                    if not granted:
-                        result_content = (
-                            "User declined this action. Continue with a safe alternative or explain the limitation."
-                        )
+                        self._run_store.save_run(run)
+                        continue
+                    assessment = self._risk_evaluator.assess(action)
+                    decision = self._policy_engine.decide(assessment, run.policy, action.tool_name)
+                    stage, title, detail = self._stage_mapper.map(action, assessment.level)
+                    if stage.value == "prepare" and "prepare" not in run.stage_notes:
+                        await self._create_stage_note(run, "prepare")
+                    if decision.outcome == DecisionOutcome.DENY:
+                        result_content = f"Action denied: {decision.reason}"
                         run.messages.append(
                             ChatMessage(
                                 role="tool",
                                 name=action.tool_name,
                                 tool_call_id=action.id,
                                 content=result_content,
+                                metadata={"status": "denied", "reason": decision.reason},
                             )
                         )
+                        self._run_store.save_run(run)
                         continue
-                await self._event_bus.publish(action_started(run, action, stage, assessment.level, title, detail))
-                # The event is persisted by the bus; persist the decision too before
-                # awaiting the tool so polling clients do not appear stalled.
-                self._run_store.save_run(run)
-                try:
-                    result = await self._executor.execute(action, self._tool_context)
-                except Exception as exc:
-                    # Persist and emit every failed attempt just like successful
-                    # ones. Otherwise polling clients lose the current tool result
-                    # until a later model turn happens to save the run.
-                    result_content = f"Tool execution failed: {type(exc).__name__}: {exc}"
+                    if decision.outcome == DecisionOutcome.REQUIRE_APPROVAL:
+                        transition(run, RunStatus.WAITING_APPROVAL)
+                        self._run_store.save_run(run)
+                        await self._event_bus.publish(approval_required(run, action, assessment.level, decision.reason))
+                        granted = await self._approval_gate.request(action, assessment)
+                        if run.status == RunStatus.WAITING_APPROVAL:
+                            transition(run, RunStatus.RUNNING)
+                            self._run_store.save_run(run)
+                        if not granted:
+                            result_content = (
+                                "User declined this action. Continue with a safe alternative or explain the limitation."
+                            )
+                            run.messages.append(
+                                ChatMessage(
+                                    role="tool",
+                                    name=action.tool_name,
+                                    tool_call_id=action.id,
+                                    content=result_content,
+                                )
+                            )
+                            self._run_store.save_run(run)
+                            continue
+                    await self._event_bus.publish(action_started(run, action, stage, assessment.level, title, detail))
+                    # The event is persisted by the bus; persist the decision too before
+                    # awaiting the tool so polling clients do not appear stalled.
+                    self._run_store.save_run(run)
+                    try:
+                        result = await self._executor.execute(action, self._tool_context)
+                    except Exception as exc:
+                        # Persist and emit every failed attempt just like successful
+                        # ones. Otherwise polling clients lose the current tool result
+                        # until a later model turn happens to save the run.
+                        result_content = f"Tool execution failed: {type(exc).__name__}: {exc}"
+                        run.messages.append(
+                            ChatMessage(
+                                role="tool",
+                                name=action.tool_name,
+                                tool_call_id=action.id,
+                                content=result_content,
+                                metadata={"status": "failed", "error_type": type(exc).__name__, "error": str(exc)},
+                            )
+                        )
+                        self._run_store.save_run(run)
+                        await self._event_bus.publish(
+                            action_failed(run, action, stage, assessment.level, result_content[:240])
+                        )
+                        continue
+                    result_status = "succeeded" if result.ok else "failed"
                     run.messages.append(
                         ChatMessage(
                             role="tool",
                             name=action.tool_name,
                             tool_call_id=action.id,
-                            content=result_content,
-                            metadata={"status": "failed", "error_type": type(exc).__name__, "error": str(exc)},
+                            content=result.content,
+                            metadata={**result.metadata, "status": result_status},
                         )
                     )
+                    if result.ok:
+                        checkpoint = create_checkpoint(run.id, action)
+                        self._checkpoint_store.save(checkpoint)
                     self._run_store.save_run(run)
+                    event_factory = action_completed if result.ok else action_failed
                     await self._event_bus.publish(
-                        action_completed(run, action, stage, assessment.level, result_content[:240])
+                        event_factory(run, action, stage, assessment.level, result.content[:240])
                     )
-                    continue
-                run.messages.append(
-                    ChatMessage(
-                        role="tool",
-                        name=action.tool_name,
-                        tool_call_id=action.id,
-                        content=result.content,
-                        metadata={"status": "succeeded", **result.metadata},
-                    )
+            except asyncio.CancelledError:
+                self._record_unfinished_actions(
+                    run,
+                    status="cancelled",
+                    content=(
+                        "Action was cancelled before a final result was available. "
+                        "Its side effects may be incomplete; verify before retrying."
+                    ),
+                    metadata={"reason": "run_cancelled", "side_effects": "unknown"},
                 )
-                checkpoint = create_checkpoint(run.id, action)
-                self._checkpoint_store.save(checkpoint)
                 self._run_store.save_run(run)
-                await self._event_bus.publish(
-                    action_completed(run, action, stage, assessment.level, result.content[:240])
+                raise
+            except Exception as exc:
+                self._record_unfinished_actions(
+                    run,
+                    status="failed",
+                    content=(
+                        "Action was not completed because the run stopped: "
+                        f"{type(exc).__name__}: {exc}. Verify side effects before retrying."
+                    ),
+                    metadata={"reason": "run_failed", "error_type": type(exc).__name__, "error": str(exc)},
                 )
+                self._run_store.save_run(run)
+                raise
 
         raise RuntimeError(f"Agent reached the maximum iteration limit ({self._max_iterations}).")
 
-    def _record_declared_steps(self, run: Run, actions: list) -> None:
+    def _record_unfinished_actions(
+        self,
+        run: Run,
+        *,
+        status: str,
+        content: str,
+        metadata: dict[str, str],
+    ) -> None:
+        """Close the current model tool plan before persisting an interrupted run."""
+        completed_ids: set[str] = set()
+        for message in reversed(run.messages):
+            if message.role == "tool":
+                if message.tool_call_id:
+                    completed_ids.add(message.tool_call_id)
+                continue
+            if message.role == "assistant" and message.tool_calls:
+                for action in message.tool_calls:
+                    if action.id not in completed_ids:
+                        run.messages.append(
+                            ChatMessage(
+                                role="tool",
+                                name=action.tool_name,
+                                tool_call_id=action.id,
+                                content=content,
+                                metadata={**metadata, "status": status},
+                            )
+                        )
+                return
+            return
+
+    def _record_declared_steps(self, run: Run, actions: list[Action]) -> None:
         """Persist model-created phase cards and attach later actions to the current phase."""
         current_step = run.workflow_steps[-1] if run.workflow_steps else None
         for action in actions:

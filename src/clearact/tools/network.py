@@ -5,13 +5,12 @@ Keeps ClearAct self-contained while providing SSRF checks, DNS pinning and safe 
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import socket
 from contextlib import suppress
 from urllib.parse import urljoin, urlparse
-from urllib.request import getproxies
 
+import httpcore
 import httpx
 
 MAX_REDIRECTS = 5
@@ -61,6 +60,8 @@ def resolve_url_target(url: str, *, allow_loopback: bool = False) -> tuple[bool,
     for info in infos:
         with suppress(ValueError):
             addresses.append(ipaddress.ip_address(info[4][0]))
+    if not addresses:
+        return False, f"Cannot resolve hostname: {parsed.hostname}", ()
     if allow_loopback and _loopback_allowed(parsed.hostname, addresses):
         return True, "", tuple(dict.fromkeys(str(_normalise(address)) for address in addresses))
     for address in addresses:
@@ -69,71 +70,68 @@ def resolve_url_target(url: str, *, allow_loopback: bool = False) -> tuple[bool,
     return True, "", tuple(dict.fromkeys(str(_normalise(address)) for address in addresses))
 
 
-class PinnedDNSAsyncTransport(httpx.AsyncBaseTransport):
-    """Validate and pin each request DNS resolution, preventing DNS rebinding."""
+class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Resolve once, validate the result, and connect to that exact address."""
 
-    _lock = asyncio.Lock()
+    def __init__(self, *, allow_loopback: bool = False, backend=None):
+        self.allow_loopback = allow_loopback
+        self._backend = backend or httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        hostname = host.decode("ascii") if isinstance(host, bytes) else str(host)
+        ok, error, addresses = resolve_url_target(
+            f"http://[{hostname}]" if ":" in hostname and not hostname.startswith("[") else f"http://{hostname}",
+            allow_loopback=self.allow_loopback,
+        )
+        if not ok:
+            raise httpcore.ConnectError(error)
+        last_error = None
+        for address in addresses:
+            try:
+                return await self._backend.connect_tcp(
+                    address,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise httpcore.ConnectError(f"Cannot connect to hostname: {hostname}")
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise httpcore.UnsupportedProtocol("Unix sockets are not supported by the safe web transport")
+
+    async def sleep(self, seconds):
+        await self._backend.sleep(seconds)
+
+
+class PinnedDNSAsyncTransport(httpx.AsyncHTTPTransport):
+    """Validate requests and pin TCP connections without replacing process-wide DNS."""
 
     def __init__(self, *, allow_loopback: bool = False):
+        super().__init__(trust_env=False)
         self.allow_loopback = allow_loopback
-        self.inner = httpx.AsyncHTTPTransport()
+        # HTTPX does not expose the network backend in its public constructor.
+        # The pool is new and has no connections yet, so replacing it here makes
+        # every connection use the validating backend while preserving Host/SNI.
+        self._pool._network_backend = PinnedNetworkBackend(allow_loopback=allow_loopback)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
-        ok, error, addresses = resolve_url_target(url, allow_loopback=self.allow_loopback)
+        ok, error, _ = resolve_url_target(url, allow_loopback=self.allow_loopback)
         if not ok:
             raise UnsafeURLRequestError(error, request=request)
-        hostname = request.url.host.rstrip(".").lower()
-        original = socket.getaddrinfo
-
-        def pinned(host, port, family=0, type=0, proto=0, flags=0):  # noqa: A002
-            if str(host).rstrip(".").lower() != hostname:
-                return original(host, port, family, type, proto, flags)
-            infos = []
-            for value in addresses:
-                address = ipaddress.ip_address(value)
-                address_family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
-                if family not in (0, socket.AF_UNSPEC, address_family):
-                    continue
-                sockaddr = (value, port or 0, 0, 0) if address_family == socket.AF_INET6 else (value, port or 0)
-                infos.append((address_family, type or socket.SOCK_STREAM, proto, "", sockaddr))
-            return infos
-
-        async with self._lock:
-            socket.getaddrinfo = pinned
-            try:
-                return await self.inner.handle_async_request(request)
-            finally:
-                socket.getaddrinfo = original
-
-    async def aclose(self) -> None:
-        await self.inner.aclose()
+        return await super().handle_async_request(request)
 
 
 def client_kwargs(*, timeout: float, allow_loopback: bool) -> dict:
-    """Match nanobot's use of explicit or environment proxy settings with a safe direct transport."""
-    mounts: dict[str, httpx.AsyncBaseTransport | None] = {}
-    proxies = getproxies()
-    for scheme in ("http", "https", "all"):
-        proxy = proxies.get(scheme)
-        if proxy:
-            if "://" not in proxy:
-                proxy = f"http://{proxy}"
-            mounts[f"{scheme}://"] = httpx.AsyncHTTPTransport(proxy=httpx.Proxy(proxy))
-    if mounts:
-        no_proxy = proxies.get("no", "")
-        if no_proxy != "*":
-            for host in no_proxy.split(","):
-                host = host.strip()
-                if host:
-                    mounts[f"all://*{host}"] = None
-        return {
-            "timeout": timeout,
-            "transport": PinnedDNSAsyncTransport(allow_loopback=allow_loopback),
-            "mounts": mounts,
-        }
+    """Build a direct client whose DNS validation cannot be bypassed by environment proxies."""
     return {
         "timeout": timeout,
+        "trust_env": False,
         "transport": PinnedDNSAsyncTransport(allow_loopback=allow_loopback),
     }
 

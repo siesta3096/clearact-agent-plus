@@ -6,7 +6,7 @@ import pytest
 from clearact.context.budget import ContextBudget
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import RiskLevel, RunStatus
-from clearact.domain.models import Action, LLMResponse, Run, ToolDefinition, ToolResult, UserPolicy
+from clearact.domain.models import Action, LLMResponse, RiskAssessment, Run, ToolDefinition, ToolResult, UserPolicy
 from clearact.runtime.approvals import DenyAllApprovalGate
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.executor import ToolExecutor
@@ -140,3 +140,203 @@ def test_tool_filter_keeps_focused_search_available_after_a_source_fetch():
     allowed = ToolFilter().select(tools, {"fetch_url"})
 
     assert [tool.name for tool in allowed] == ["web_search", "fetch_url", "write_file"]
+
+
+def test_failed_tool_result_is_not_checkpointed_or_reported_as_success(workspace):
+    class FailingSearchTool:
+        name = "web_search"
+
+        def definition(self) -> ToolDefinition:
+            return ToolDefinition(name=self.name, description="search", parameters={})
+
+        async def execute(self, _arguments, _context, action_id) -> ToolResult:
+            return ToolResult(
+                action_id=action_id,
+                tool_name=self.name,
+                ok=False,
+                content="The upstream search failed.",
+                metadata={"status": "succeeded", "provider": "demo"},
+            )
+
+    async def execute():
+        action = Action(id="call_failed", tool_name="web_search", arguments={"query": "test"})
+        registry = ToolRegistry()
+        registry.register(FailingSearchTool())
+        event_bus = EventBus()
+        events = []
+        event_bus.subscribe_sync(events.append)
+        runner = AgentRunner(
+            provider=ScriptedProvider([LLMResponse(tool_calls=[action]), LLMResponse(content="done")]),
+            registry=registry,
+            context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+            risk_evaluator=RiskEvaluator(workspace, {}),
+            policy_engine=PolicyEngine(),
+            approval_gate=DenyAllApprovalGate(),
+            executor=ToolExecutor(registry, 1),
+            event_bus=event_bus,
+            run_store=RunStore(workspace / "data"),
+            checkpoint_store=CheckpointStore(workspace / "data"),
+            tool_context=ToolContext(workspace),
+            stage_mapper=StageMapper({}),
+            max_iterations=4,
+            max_tool_calls=4,
+        )
+        run = Run(goal="search")
+        final = await runner.run(run)
+        return run, final, events
+
+    run, final, events = asyncio.run(execute())
+
+    assert final == "done"
+    result = next(message for message in run.messages if message.role == "tool")
+    assert result.metadata == {"status": "failed", "provider": "demo"}
+    assert not (workspace / "data" / "checkpoints" / f"{run.id}.jsonl").exists()
+    assert "action.failed" in [event.type for event in events]
+    assert "action.completed" not in [event.type for event in events]
+
+
+def test_cancellation_closes_every_action_in_the_visible_plan(workspace):
+    class BlockingSearchTool:
+        name = "web_search"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        def definition(self) -> ToolDefinition:
+            return ToolDefinition(name=self.name, description="search", parameters={})
+
+        async def execute(self, _arguments, _context, _action_id) -> ToolResult:
+            self.started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("The cancelled tool must not complete.")
+
+    async def execute():
+        actions = [
+            Action(id="call_cancel_one", tool_name="web_search", arguments={"query": "one"}),
+            Action(id="call_cancel_two", tool_name="web_search", arguments={"query": "two"}),
+        ]
+        tool = BlockingSearchTool()
+        registry = ToolRegistry()
+        registry.register(tool)
+        runner = AgentRunner(
+            provider=ScriptedProvider([LLMResponse(tool_calls=actions)]),
+            registry=registry,
+            context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+            risk_evaluator=RiskEvaluator(workspace, {}),
+            policy_engine=PolicyEngine(),
+            approval_gate=DenyAllApprovalGate(),
+            executor=ToolExecutor(registry, 60),
+            event_bus=EventBus(),
+            run_store=RunStore(workspace / "data"),
+            checkpoint_store=CheckpointStore(workspace / "data"),
+            tool_context=ToolContext(workspace),
+            stage_mapper=StageMapper({}),
+            max_iterations=4,
+            max_tool_calls=4,
+        )
+        run = Run(goal="search")
+        task = asyncio.create_task(runner.run(run))
+        await tool.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return run, registry
+
+    run, registry = asyncio.run(execute())
+
+    assert run.status is RunStatus.CANCELLED
+    planned_ids = {action.id for message in run.messages for action in message.tool_calls}
+    results = [message for message in run.messages if message.role == "tool"]
+    assert {message.tool_call_id for message in results} == planned_ids
+    assert all(message.metadata["status"] == "cancelled" for message in results)
+    ContextBuilder(ContextBudget(4096, 0.7)).build(run.messages, registry.definitions(), set())
+
+
+def test_tool_call_budget_closes_unstarted_actions_before_failing(workspace):
+    class SearchTool:
+        name = "web_search"
+
+        def definition(self) -> ToolDefinition:
+            return ToolDefinition(name=self.name, description="search", parameters={})
+
+        async def execute(self, _arguments, _context, action_id) -> ToolResult:
+            return ToolResult(action_id=action_id, tool_name=self.name, ok=True, content="first result")
+
+    async def execute():
+        actions = [
+            Action(id="call_budget_one", tool_name="web_search", arguments={"query": "one"}),
+            Action(id="call_budget_two", tool_name="web_search", arguments={"query": "two"}),
+        ]
+        registry = ToolRegistry()
+        registry.register(SearchTool())
+        runner = AgentRunner(
+            provider=ScriptedProvider([LLMResponse(tool_calls=actions)]),
+            registry=registry,
+            context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+            risk_evaluator=RiskEvaluator(workspace, {}),
+            policy_engine=PolicyEngine(),
+            approval_gate=DenyAllApprovalGate(),
+            executor=ToolExecutor(registry, 1),
+            event_bus=EventBus(),
+            run_store=RunStore(workspace / "data"),
+            checkpoint_store=CheckpointStore(workspace / "data"),
+            tool_context=ToolContext(workspace),
+            stage_mapper=StageMapper({}),
+            max_iterations=4,
+            max_tool_calls=1,
+        )
+        run = Run(goal="search")
+        with pytest.raises(RuntimeError, match="tool-call limit"):
+            await runner.run(run)
+        return run, registry
+
+    run, registry = asyncio.run(execute())
+
+    assert run.status is RunStatus.FAILED
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert results["call_budget_one"].metadata["status"] == "succeeded"
+    assert results["call_budget_two"].metadata["status"] == "failed"
+    ContextBuilder(ContextBudget(4096, 0.7)).build(run.messages, registry.definitions(), set())
+
+
+def test_approval_gate_error_marks_waiting_run_failed_without_losing_the_action(workspace):
+    class ApprovalRiskEvaluator:
+        def assess(self, _action) -> RiskAssessment:
+            return RiskAssessment(level=RiskLevel.YELLOW, reasons=["approval required"])
+
+    class ExplodingApprovalGate:
+        async def request(self, _action, _assessment) -> bool:
+            raise RuntimeError("approval service unavailable")
+
+    async def execute():
+        action = Action(id="call_approval", tool_name="web_search", arguments={"query": "test"})
+        registry = ToolRegistry()
+        registry.register(SearchTool())
+        runner = AgentRunner(
+            provider=ScriptedProvider([LLMResponse(tool_calls=[action])]),
+            registry=registry,
+            context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+            risk_evaluator=ApprovalRiskEvaluator(),
+            policy_engine=PolicyEngine(),
+            approval_gate=ExplodingApprovalGate(),
+            executor=ToolExecutor(registry, 1),
+            event_bus=EventBus(),
+            run_store=RunStore(workspace / "data"),
+            checkpoint_store=CheckpointStore(workspace / "data"),
+            tool_context=ToolContext(workspace),
+            stage_mapper=StageMapper({}),
+            max_iterations=4,
+            max_tool_calls=4,
+        )
+        run = Run(goal="search", policy=UserPolicy(autonomy_threshold=RiskLevel.GREEN))
+        with pytest.raises(RuntimeError, match="approval service unavailable"):
+            await runner.run(run)
+        return run, registry
+
+    run, registry = asyncio.run(execute())
+
+    assert run.status is RunStatus.FAILED
+    result = next(message for message in run.messages if message.role == "tool")
+    assert result.tool_call_id == "call_approval"
+    assert result.metadata["status"] == "failed"
+    ContextBuilder(ContextBudget(4096, 0.7)).build(run.messages, registry.definitions(), set())

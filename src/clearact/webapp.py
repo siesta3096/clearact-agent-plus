@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from clearact import cli
 from clearact.domain.enums import RiskLevel, RunStatus
-from clearact.domain.models import ChatMessage, Run, UserPolicy
+from clearact.domain.models import Action, ChatMessage, RiskAssessment, Run, RunEvent, RunExecutionSettings, UserPolicy
 from clearact.settings import load_settings
 from clearact.storage.run_store import RunStore
 
@@ -26,16 +26,36 @@ _ASSET_DIR = Path(__file__).with_name("web")
 
 app = FastAPI(title="ClearAct Console")
 _active_tasks: dict[str, asyncio.Task] = {}
+_active_runs: dict[str, Run] = {}
+_title_tasks: dict[str, asyncio.Task] = {}
+_pending_approvals: dict[str, dict[str, Any]] = {}
+
+
+class WebApprovalGate:
+    """Pause a web run until its local console records the user's decision."""
+
+    def __init__(self, run_id: str) -> None:
+        self._run_id = run_id
+
+    async def request(self, action: Action, assessment: RiskAssessment) -> bool:
+        future = asyncio.get_running_loop().create_future()
+        pending = {"action": action, "assessment": assessment, "future": future}
+        _pending_approvals[self._run_id] = pending
+        try:
+            return bool(await future)
+        finally:
+            if _pending_approvals.get(self._run_id) is pending:
+                _pending_approvals.pop(self._run_id, None)
 
 
 class StartRunRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=20_000)
     run_id: str | None = None
     rewind_action_id: str | None = None
-    interface_language: str = Field(default="zh", pattern="^(zh|en)$")
+    interface_language: str | None = Field(default=None, pattern="^(zh|en)$")
     profile: str | None = None
     workdir: str | None = None
-    autonomy: RiskLevel = RiskLevel.RED
+    autonomy: RiskLevel | None = None
     max_iterations: int | None = Field(default=None, ge=1, le=10_000)
     max_tool_calls: int | None = Field(default=None, ge=1, le=100_000)
 
@@ -59,6 +79,28 @@ class SettingsRequest(BaseModel):
 
 class MCPImportRequest(BaseModel):
     config: dict[str, Any]
+
+
+class ApprovalDecisionRequest(BaseModel):
+    action_id: str
+    approved: bool
+
+
+def _effective_autonomy(
+    request: StartRunRequest, default: RiskLevel, run: Run | None = None
+) -> RiskLevel:
+    if request.autonomy is not None:
+        return request.autonomy
+    if run is not None:
+        return run.policy.autonomy_threshold
+    return default
+
+
+def _current_run(run_id: str, saved: Run) -> Run:
+    task = _active_tasks.get(run_id)
+    if task is not None and not task.done():
+        return _active_runs.get(run_id, saved)
+    return saved
 
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
@@ -252,10 +294,33 @@ async def run_detail(run_id: str) -> dict:
         run = store.load_run(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Run not found") from exc
+    pending = _pending_approvals.get(run_id)
+    approval = None
+    if pending and not pending["future"].done():
+        action, assessment = pending["action"], pending["assessment"]
+        approval = {
+            "action_id": action.id,
+            "tool_name": action.tool_name,
+            "arguments": action.arguments,
+            "risk": assessment.level.value,
+            "reasons": assessment.reasons,
+        }
     return {
         "run": run.model_dump(mode="json"),
         "events": [event.model_dump(mode="json") for event in store.load_events(run_id)],
+        "approval": approval,
     }
+
+
+@app.post("/api/runs/{run_id}/approval")
+async def decide_approval(run_id: str, request: ApprovalDecisionRequest) -> dict:
+    pending = _pending_approvals.get(run_id)
+    if not pending or pending["future"].done():
+        raise HTTPException(status_code=409, detail="This topic is not waiting for approval.")
+    if pending["action"].id != request.action_id:
+        raise HTTPException(status_code=409, detail="The pending action has changed. Refresh and try again.")
+    pending["future"].set_result(request.approved)
+    return {"accepted": True, "approved": request.approved}
 
 
 @app.post("/api/runs/{run_id}/stop")
@@ -270,10 +335,20 @@ async def stop_run(run_id: str) -> dict:
         return {"stopped": False, "status": run.status.value}
     if task and not task.done():
         task.cancel()
+    title_task = _title_tasks.get(run_id)
+    if title_task and not title_task.done():
+        title_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await title_task
+    if task and not task.done():
         with suppress(asyncio.CancelledError):
             await task
-    run.status = RunStatus.CANCELLED
-    store.save_run(run)
+    # Cancellation may persist tool results and other final state. Read those
+    # changes back instead of overwriting them with the pre-cancellation copy.
+    run = store.load_run(run_id)
+    if run.status != RunStatus.CANCELLED:
+        run.status = RunStatus.CANCELLED
+        store.save_run(run)
     return {"stopped": True, "status": run.status.value}
 
 
@@ -281,9 +356,10 @@ async def stop_run(run_id: str) -> dict:
 async def rename_run(run_id: str, request: RenameRunRequest) -> dict:
     store = RunStore(load_settings(cli._project_root()).data_root)
     try:
-        run = store.load_run(run_id)
+        saved = store.load_run(run_id)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Topic not found.") from exc
+    run = _current_run(run_id, saved)
     run.title = request.title.strip()
     store.save_run(run)
     return {"saved": True, "title": run.title}
@@ -300,6 +376,15 @@ async def delete_run(run_id: str) -> dict:
     path, events = root / f"{run_id}.json", root / f"{run_id}.events.jsonl"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Topic not found.")
+    title_task = _title_tasks.get(run_id)
+    if title_task and not title_task.done():
+        title_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await title_task
+    # A follow-up may have started while title cancellation yielded control.
+    task = _active_tasks.get(run_id)
+    if task and not task.done():
+        raise HTTPException(status_code=409, detail="Cannot delete a running topic; stop it first.")
     path.unlink()
     if events.exists():
         events.unlink()
@@ -310,14 +395,8 @@ async def delete_run(run_id: str) -> dict:
 async def start_run(request: StartRunRequest) -> dict:
     root = cli._project_root()
     settings = load_settings(root)
-    workdir = Path(request.workdir or settings.workspace_root).expanduser()
-    if not workdir.is_dir():
-        raise HTTPException(status_code=422, detail="The selected working directory must already exist.")
-    profile_name = request.profile or settings.models["default_profile"]
-    if profile_name not in settings.models["profiles"]:
-        raise HTTPException(status_code=422, detail="Unknown model profile.")
-
     store = RunStore(settings.data_root)
+    run = None
     if request.run_id:
         active = _active_tasks.get(request.run_id)
         if active and not active.done():
@@ -326,6 +405,32 @@ async def start_run(request: StartRunRequest) -> dict:
             run = store.load_run(request.run_id)
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=404, detail="Topic not found.") from exc
+
+    previous = run.execution if run else RunExecutionSettings()
+    # Older ledgers predate execution settings but already record the authorized
+    # directory in their policy. Migrate it instead of silently using a new root.
+    saved_workdir = previous.workdir
+    if run and not saved_workdir and run.policy.allowed_scopes:
+        saved_workdir = run.policy.allowed_scopes[0]
+    workdir = Path(request.workdir or saved_workdir or settings.workspace_root).expanduser()
+    if not workdir.is_absolute():
+        workdir = root / workdir
+    workdir = workdir.resolve()
+    if not workdir.is_dir():
+        raise HTTPException(status_code=422, detail="The selected working directory must already exist.")
+    profile_name = request.profile or previous.profile or settings.models["default_profile"]
+    if profile_name not in settings.models["profiles"]:
+        raise HTTPException(status_code=422, detail="Unknown model profile.")
+    execution = RunExecutionSettings(
+        workdir=str(workdir),
+        profile=profile_name,
+        max_iterations=request.max_iterations or previous.max_iterations or settings.agent.max_iterations,
+        max_tool_calls=request.max_tool_calls or previous.max_tool_calls or settings.agent.max_tool_calls_per_run,
+        interface_language=request.interface_language or previous.interface_language or "zh",
+    )
+    effective_autonomy = _effective_autonomy(request, settings.default_autonomy, run)
+
+    if run is not None:
         # A normal follow-up resumes the topic. A stage rewind deliberately
         # discards that action and everything after it, then restarts from the
         # retained earlier context plus the user's feedback.
@@ -348,12 +453,13 @@ async def start_run(request: StartRunRequest) -> dict:
             run.workflow_steps = run.workflow_steps[:step_cutoff]
             store.truncate_events_before_action(run.id, request.rewind_action_id)
         run.status = RunStatus.CREATED
+        run.policy.autonomy_threshold = effective_autonomy
         run.messages.append(ChatMessage(role="user", content=request.goal))
     else:
         run = Run(
             goal=request.goal,
             policy=UserPolicy(
-                autonomy_threshold=request.autonomy,
+                autonomy_threshold=effective_autonomy,
                 allowed_scopes=[str(workdir.resolve())],
             ),
             messages=[
@@ -388,7 +494,7 @@ async def start_run(request: StartRunRequest) -> dict:
                         "workspace; report the exact saved path in the final answer. "
                         + (
                             "Reply to the user in concise Chinese."
-                            if request.interface_language == "zh"
+                            if execution.interface_language == "zh"
                             else "Reply to the user in concise English."
                         )
                     ),
@@ -396,6 +502,8 @@ async def start_run(request: StartRunRequest) -> dict:
                 ChatMessage(role="user", content=request.goal),
             ],
         )
+    run.execution = execution
+    run.policy.allowed_scopes = [str(workdir)]
     store.save_run(run)
 
     async def generate_title() -> None:
@@ -403,7 +511,7 @@ async def start_run(request: StartRunRequest) -> dict:
             return
         try:
             provider = cli._build_provider(settings.models["profiles"][profile_name])
-            language = "Chinese" if request.interface_language == "zh" else "English"
+            language = "Chinese" if execution.interface_language == "zh" else "English"
             response = await provider.chat(
                 [
                     ChatMessage(
@@ -418,8 +526,13 @@ async def start_run(request: StartRunRequest) -> dict:
             )
             title = (response.content or "").strip().replace("\n", " ")[:80]
             if title:
-                run.title = title
-                store.save_run(run)
+                # No await between loading and saving: do not resurrect a
+                # deleted topic or overwrite a rename or a stopped run.
+                latest = store.load_run(run.id)
+                current = _current_run(run.id, latest)
+                if current.title is None and current.status != RunStatus.CANCELLED:
+                    current.title = title
+                    store.save_run(current)
         except Exception:
             return
 
@@ -428,21 +541,49 @@ async def start_run(request: StartRunRequest) -> dict:
             await cli._run(
                 request.goal,
                 profile_name,
-                request.autonomy.value,
+                effective_autonomy.value,
                 str(workdir),
-                request.max_iterations,
-                request.max_tool_calls,
+                execution.max_iterations,
+                execution.max_tool_calls,
                 run=run,
-                interface_language=request.interface_language,
+                interface_language=execution.interface_language,
+                approval_gate=WebApprovalGate(run.id),
             )
-        except Exception:
-            # AgentRunner persists failure details and state; the UI reads them from the run ledger.
-            return
+        except Exception as exc:
+            # Provider/MCP initialization can fail before AgentRunner takes
+            # ownership. Persist every failure at this outer boundary too.
+            try:
+                latest = store.load_run(run.id)
+            except FileNotFoundError:
+                return
+            if latest.status == RunStatus.CANCELLED:
+                return
+            error = f"{type(exc).__name__}: {exc}"[:2000]
+            latest.status = RunStatus.FAILED
+            prefix = "任务执行失败：" if execution.interface_language == "zh" else "Task failed: "
+            latest.messages.append(ChatMessage(role="assistant", content=prefix + error))
+            store.save_run(latest)
+            store.append_event(RunEvent(type="run_failed", run_id=run.id, title="Task failed", detail=error))
 
-    asyncio.create_task(generate_title())
+    _active_runs[run.id] = run
     task = asyncio.create_task(execute())
     _active_tasks[run.id] = task
-    task.add_done_callback(lambda _: _active_tasks.pop(run.id, None))
+
+    def release_run(done: asyncio.Task) -> None:
+        if _active_tasks.get(run.id) is done:
+            _active_tasks.pop(run.id, None)
+            _active_runs.pop(run.id, None)
+
+    task.add_done_callback(release_run)
+    if not request.run_id:
+        title_task = asyncio.create_task(generate_title())
+        _title_tasks[run.id] = title_task
+
+        def release_title(done: asyncio.Task) -> None:
+            if _title_tasks.get(run.id) is done:
+                _title_tasks.pop(run.id, None)
+
+        title_task.add_done_callback(release_title)
     return {"accepted": True, "run_id": run.id}
 
 

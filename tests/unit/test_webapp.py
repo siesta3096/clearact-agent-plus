@@ -4,6 +4,8 @@ import json
 import pytest
 
 from clearact import webapp
+from clearact.domain.enums import RiskLevel
+from clearact.domain.models import Action, RiskAssessment
 
 
 def test_settings_endpoint_hides_api_keys_and_updates_safe_fields(tmp_path, monkeypatch):
@@ -165,3 +167,34 @@ def test_settings_endpoint_returns_profile_fields_for_form_prefill(tmp_path, mon
     monkeypatch.setattr(webapp.cli, "_project_root", lambda: tmp_path)
     profile = asyncio.run(webapp.get_settings())["profiles"]["demo"]
     assert profile == {"provider": "openai", "model": "gpt", "baseUrl": "https://api.example", "contextWindow": 4096, "hasApiKey": True}
+
+
+def test_start_request_defers_to_configured_autonomy():
+    request = webapp.StartRunRequest(goal="test")
+
+    assert request.autonomy is None
+    assert webapp._effective_autonomy(request, RiskLevel.GREEN) is RiskLevel.GREEN
+    assert (
+        webapp._effective_autonomy(webapp.StartRunRequest(goal="test", autonomy="yellow"), RiskLevel.GREEN)
+        is RiskLevel.YELLOW
+    )
+
+
+def test_web_approval_gate_resumes_with_the_submitted_decision():
+    async def execute():
+        gate = webapp.WebApprovalGate("run_test")
+        action = Action(id="act_test", tool_name="write_file", arguments={"path": "report.txt"})
+        assessment = RiskAssessment(level=RiskLevel.YELLOW, reasons=["modifies a file"])
+        waiting = asyncio.create_task(gate.request(action, assessment))
+        await asyncio.sleep(0)
+
+        pending = webapp._pending_approvals["run_test"]
+        assert pending["action"] == action
+        response = await webapp.decide_approval(
+            "run_test", webapp.ApprovalDecisionRequest(action_id=action.id, approved=True)
+        )
+        assert response == {"accepted": True, "approved": True}
+        assert await waiting is True
+        assert "run_test" not in webapp._pending_approvals
+
+    asyncio.run(execute())

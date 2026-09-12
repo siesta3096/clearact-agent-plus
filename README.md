@@ -100,6 +100,7 @@ ClearAct 兼容常见客户端的 `mcpServers` JSON 结构。可在 Web **设置
 ```
 
 - 启动一个任务时，ClearAct 连接启用的服务并调用 `tools/list`；发现的工具会以 `mcp__服务名__工具名` 注册，避免与内置工具冲突。
+- 服务发现默认最多等待 15 秒；可在单个服务中设置 `connectTimeoutSeconds`（大于 0 且不超过 300）。超时或连接失败只会跳过该服务，不会阻塞整个任务。
 - MCP 工具默认评估为 **yellow**：默认 yellow/red 可自动执行，green 需要用户审批；关闭“联网”策略会拒绝 MCP 调用。由于远程工具的真实副作用无法由客户端可靠推断，生产环境建议先用 green 审批模式验证新服务。
 - 当前支持无交互的 stdio 与 Streamable HTTP 认证（通过静态 `env` / `headers`）；暂未实现 OAuth/DCR、浏览器登录、SSE 旧传输、MCP resources/prompts/sampling，以及跨运行的持久连接池。
 

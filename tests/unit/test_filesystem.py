@@ -5,7 +5,7 @@ import pytest
 from clearact.domain.errors import ScopeViolationError
 from clearact.storage.snapshots import SnapshotStore
 from clearact.tools.base import ToolContext
-from clearact.tools.filesystem import ReadFileTool, WriteFileTool
+from clearact.tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
 
 
 def test_write_then_read_file_in_workspace(workspace):
@@ -32,6 +32,16 @@ def test_green_write_rejects_path_outside_workspace(workspace):
 
     with pytest.raises(ScopeViolationError):
         asyncio.run(execute())
+
+
+@pytest.mark.parametrize("autonomy", ["white", "green"])
+@pytest.mark.parametrize("tool", [ReadFileTool(), ListFilesTool()])
+def test_low_autonomy_cannot_read_or_list_outside_workspace(workspace, tmp_path, autonomy, tool):
+    target = tmp_path / "private.txt"
+    target.write_text("private", encoding="utf-8")
+
+    with pytest.raises(ScopeViolationError):
+        asyncio.run(tool.execute({"path": str(target)}, ToolContext(workspace, autonomy=autonomy), "act_escape"))
 
 
 def test_red_can_read_and_write_ordinary_path_outside_workspace(workspace, tmp_path):

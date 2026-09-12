@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from contextlib import AsyncExitStack
 from typing import Any
@@ -16,6 +17,8 @@ from clearact.tools.base import ToolContext
 from clearact.tools.network import resolve_url_target
 
 _NAME = re.compile(r"[^a-zA-Z0-9_-]+")
+_DEFAULT_CONNECT_TIMEOUT_SECONDS = 15.0
+_MAX_CONNECT_TIMEOUT_SECONDS = 300.0
 
 
 def _safe_name(value: str) -> str:
@@ -24,6 +27,16 @@ def _safe_name(value: str) -> str:
 
 def mcp_tool_name(server_name: str, tool_name: str) -> str:
     return f"mcp__{_safe_name(server_name)}__{_safe_name(tool_name)}"
+
+
+def _connect_timeout(config: dict[str, Any]) -> float:
+    value = config.get("connectTimeoutSeconds", _DEFAULT_CONNECT_TIMEOUT_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("MCP connectTimeoutSeconds must be a number of seconds.")
+    timeout = float(value)
+    if not 0 < timeout <= _MAX_CONNECT_TIMEOUT_SECONDS:
+        raise ValueError(f"MCP connectTimeoutSeconds must be between 0 and {_MAX_CONNECT_TIMEOUT_SECONDS:g}.")
+    return timeout
 
 
 class MCPManager:
@@ -39,19 +52,31 @@ class MCPManager:
 
     async def connect(self) -> None:
         for name, config in self._servers.items():
+            server_stack = AsyncExitStack()
             try:
-                session = await self._connect_one(config)
-                listed = await session.list_tools()
-                self._sessions[name] = session
+                async with asyncio.timeout(_connect_timeout(config)):
+                    session = await self._connect_one(config, server_stack)
+                    listed = await session.list_tools()
+                discovered: dict[str, tuple[str, str, Any]] = {}
                 for remote in listed.tools:
                     local = mcp_tool_name(name, remote.name)
-                    if local in self._tools:
+                    if local in self._tools or local in discovered:
                         raise ValueError(f"Duplicate MCP tool name: {local}")
-                    self._tools[local] = (name, remote.name, remote)
+                    discovered[local] = (name, remote.name, remote)
+                self._sessions[name] = session
+                self._tools.update(discovered)
+                self._stack.push_async_callback(server_stack.aclose)
+            except asyncio.CancelledError:
+                await server_stack.aclose()
+                raise
             except Exception as exc:
+                await server_stack.aclose()
                 self.errors[name] = f"{type(exc).__name__}: {exc}"
 
-    async def _connect_one(self, config: dict[str, Any]) -> ClientSession:
+    async def _connect_one(
+        self, config: dict[str, Any], stack: AsyncExitStack | None = None
+    ) -> ClientSession:
+        stack = stack or self._stack
         transport = config.get("transport", "stdio")
         if transport == "stdio":
             command = config.get("command")
@@ -65,7 +90,7 @@ class MCPManager:
                 not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
             ):
                 raise ValueError("stdio env must be a string map")
-            streams = await self._stack.enter_async_context(
+            streams = await stack.enter_async_context(
                 stdio_client(StdioServerParameters(command=command, args=args, env=env))
             )
         elif transport == "streamable_http":
@@ -81,13 +106,13 @@ class MCPManager:
                 or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items())
             ):
                 raise ValueError("headers must be a string map")
-            read_stream, write_stream, _ = await self._stack.enter_async_context(
+            read_stream, write_stream, _ = await stack.enter_async_context(
                 streamablehttp_client(url, headers=headers)
             )
             streams = (read_stream, write_stream)
         else:
             raise ValueError("transport must be stdio or streamable_http")
-        session = await self._stack.enter_async_context(ClientSession(*streams))
+        session = await stack.enter_async_context(ClientSession(*streams))
         await session.initialize()
         return session
 

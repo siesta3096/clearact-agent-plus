@@ -30,6 +30,18 @@ def action_completed(run: Run, action: Action, stage: Stage, risk: RiskLevel, de
     )
 
 
+def action_failed(run: Run, action: Action, stage: Stage, risk: RiskLevel, detail: str) -> RunEvent:
+    return RunEvent(
+        type="action.failed",
+        run_id=run.id,
+        action_id=action.id,
+        stage=stage,
+        risk=risk,
+        title="操作失败",
+        detail=detail,
+    )
+
+
 def approval_required(run: Run, action: Action, risk: RiskLevel, detail: str) -> RunEvent:
     return RunEvent(
         type="approval.required",

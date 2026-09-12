@@ -2,7 +2,7 @@ from clearact.domain.enums import RunStatus
 from clearact.domain.models import Run
 
 _ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
-    RunStatus.CREATED: {RunStatus.RUNNING, RunStatus.CANCELLED},
+    RunStatus.CREATED: {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED},
     RunStatus.RUNNING: {
         RunStatus.WAITING_APPROVAL,
         RunStatus.PAUSED,
@@ -10,8 +10,8 @@ _ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
         RunStatus.FAILED,
         RunStatus.CANCELLED,
     },
-    RunStatus.WAITING_APPROVAL: {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.CANCELLED},
-    RunStatus.PAUSED: {RunStatus.RUNNING, RunStatus.CANCELLED},
+    RunStatus.WAITING_APPROVAL: {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.PAUSED: {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED},
     RunStatus.COMPLETED: set(),
     RunStatus.FAILED: set(),
     RunStatus.CANCELLED: set(),

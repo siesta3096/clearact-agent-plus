@@ -83,12 +83,23 @@ class PolicyDecision(BaseModel):
     reason: str
 
 
+class RunExecutionSettings(BaseModel):
+    """Persist the execution choices needed to resume a topic after a reload."""
+
+    workdir: str | None = None
+    profile: str | None = None
+    max_iterations: int | None = Field(default=None, ge=1)
+    max_tool_calls: int | None = Field(default=None, ge=1)
+    interface_language: str | None = Field(default=None, pattern="^(zh|en)$")
+
+
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: new_id("run"))
     goal: str
     title: str | None = None
     status: RunStatus = RunStatus.CREATED
     policy: UserPolicy = Field(default_factory=UserPolicy)
+    execution: RunExecutionSettings = Field(default_factory=RunExecutionSettings)
     messages: list[ChatMessage] = Field(default_factory=list)
     # Public, model-generated stage summaries. These are deliberately distinct
     # from private chain-of-thought / provider reasoning traces.

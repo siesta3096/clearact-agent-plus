@@ -158,6 +158,7 @@ async def _run(
     max_tool_calls: int | None = None,
     run: Run | None = None,
     interface_language: str = "zh",
+    approval_gate: ApprovalGate | None = None,
 ) -> None:
     project_root = _project_root()
     _load_dotenv(project_root)
@@ -247,7 +248,7 @@ async def _run(
         context_builder=ContextBuilder(ContextBudget(profile["context_window"], settings.agent.context_budget_ratio)),
         risk_evaluator=RiskEvaluator(workspace_root, settings.risk_rules),
         policy_engine=PolicyEngine(),
-        approval_gate=ConsoleApprovalGate(console),
+        approval_gate=approval_gate or ConsoleApprovalGate(console),
         executor=ToolExecutor(registry, settings.agent.tool_timeout_seconds),
         event_bus=event_bus,
         run_store=run_store,
