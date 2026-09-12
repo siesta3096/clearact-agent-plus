@@ -30,6 +30,10 @@ def test_folder_picker_changes_workspace_without_rewriting_the_goal():
     assert "connection-banner" in script
     assert "Ollama 原生（/api/chat）" in script
     assert "OpenAI 兼容（/v1/chat/completions）" in script
+    assert 'id="attach-files"' in html
+    assert 'id="file-input"' in html
+    assert 'id="attachment-list"' in html
+    assert 'json("/api/uploads"' in script
 
 
 def test_web_assets_keep_untrusted_content_out_of_html_attributes():

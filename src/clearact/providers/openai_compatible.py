@@ -5,6 +5,7 @@ import json
 import httpx
 
 from clearact.domain.models import Action, ChatMessage, LLMResponse, ToolDefinition
+from clearact.providers.attachments import openai_message_payload
 
 
 class OpenAICompatibleProvider:
@@ -33,7 +34,7 @@ class OpenAICompatibleProvider:
         # reasoning_content is intentionally retained in history. Compatible
         # providers that support thinking-mode tool calls (for example DeepSeek)
         # use it to preserve the returned reasoning trace between tool turns.
-        payload = message.model_dump(exclude={"tool_calls"}, exclude_none=True)
+        payload = openai_message_payload(message)
         if message.tool_calls:
             payload["tool_calls"] = [
                 {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 
 from clearact.domain.models import Action, ChatMessage, LLMResponse, ToolDefinition
+from clearact.providers.attachments import ollama_message_payload
 
 
 class OllamaProvider:
@@ -13,7 +14,7 @@ class OllamaProvider:
 
     @staticmethod
     def _message_payload(message: ChatMessage) -> dict:
-        payload = message.model_dump(exclude={"tool_calls"}, exclude_none=True)
+        payload = ollama_message_payload(message)
         if message.tool_calls:
             payload["tool_calls"] = [
                 {"function": {"name": action.tool_name, "arguments": action.arguments}} for action in message.tool_calls

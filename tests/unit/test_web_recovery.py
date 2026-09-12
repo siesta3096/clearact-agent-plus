@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +53,65 @@ async def finish_run(run_id):
         await task
     if title_task is not None:
         await title_task
+
+
+def test_uploaded_attachment_is_copied_into_workspace_and_recorded(web_environment, monkeypatch):
+    settings, store = web_environment
+
+    async def execute(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(webapp.cli, "_run", execute)
+
+    async def scenario():
+        uploaded = await webapp.upload_attachments(
+            webapp.UploadRequest(
+                workdir=str(settings.workspace_root),
+                files=[
+                    webapp.UploadItem(
+                        name="../notes.txt",
+                        media_type="text/plain",
+                        data_base64=base64.b64encode("附件内容".encode()).decode(),
+                    )
+                ],
+            )
+        )
+        reference = uploaded["attachments"][0]
+        response = await webapp.start_run(
+            webapp.StartRunRequest(goal="总结附件", workdir=str(settings.workspace_root), attachments=[reference])
+        )
+        await finish_run(response["run_id"])
+        return uploaded, store.load_run(response["run_id"])
+
+    uploaded, run = asyncio.run(scenario())
+
+    reference = uploaded["attachments"][0]
+    assert reference["name"] == "notes.txt"
+    assert reference["path"].startswith(".clearact/attachments/upload_")
+    target = settings.workspace_root / reference["path"]
+    assert target.read_text(encoding="utf-8") == "附件内容"
+    attachment = next(message for message in run.messages if message.role == "user").metadata["attachments"][0]
+    assert attachment["path"] == reference["path"]
+    assert attachment["storage_path"] == str(target.resolve())
+
+
+def test_run_rejects_attachment_path_outside_upload_area(web_environment, tmp_path):
+    settings, _ = web_environment
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not uploaded", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            webapp.start_run(
+                webapp.StartRunRequest(
+                    goal="read",
+                    workdir=str(settings.workspace_root),
+                    attachments=[{"name": "outside.txt", "path": "../outside.txt", "media_type": "text/plain"}],
+                )
+            )
+        )
+
+    assert error.value.status_code == 422
 
 
 @pytest.mark.parametrize("rewind", [False, True])
