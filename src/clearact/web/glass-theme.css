@@ -1,0 +1,136 @@
+/* A second, refractive layer: loaded after the base layout to keep structure stable. */
+:root {
+  --glass-surface: linear-gradient(135deg, rgb(255 255 255 / 0.68), rgb(250 253 255 / 0.28) 48%, rgb(215 230 255 / 0.20));
+  --glass-edge: rgb(255 255 255 / 0.82);
+  --glass-shadow: 0 26px 70px rgb(36 67 118 / 0.13), 0 7px 20px rgb(30 65 110 / 0.08), inset 0 1px 1px rgb(255 255 255 / 0.92), inset 0 -1px 1px rgb(92 138 196 / 0.09);
+  --soft-panel: rgb(255 255 255 / 0.34);
+  --ink: #192235;
+  --ink-soft: #637086;
+  --line: rgb(116 145 187 / 0.20);
+  --blue: #3d76d5;
+  --violet: #7966ca;
+}
+
+html { color-scheme: light; }
+body { background: radial-gradient(circle at 72% 4%, #eff4ff 0, transparent 32%), radial-gradient(circle at 12% 88%, #f1f6ff 0, transparent 37%), #e9eef5; }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .6; background-image: linear-gradient(115deg, rgb(255 255 255 / .42), transparent 31%, rgb(255 255 255 / .22) 48%, transparent 66%); mix-blend-mode: soft-light; }
+
+.aurora { opacity: .46; filter: blur(42px) saturate(112%); }
+.aurora-one { background: radial-gradient(circle, #a5c8ff 0, #c9c2ff8c 39%, transparent 70%); }
+.aurora-two { background: radial-gradient(circle, #a9d9df 0, #9db5f280 42%, transparent 70%); }
+
+.glass, .composer, .message, .stage-card, .quick-card, .settings-dialog {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass-surface);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(34px) saturate(125%) brightness(1.035);
+  -webkit-backdrop-filter: blur(34px) saturate(125%) brightness(1.035);
+}
+.glass::before, .composer::before, .message::before, .stage-card::before, .quick-card::before, .settings-dialog::before {
+  content: ""; position: absolute; z-index: -1; pointer-events: none; inset: 1px; border-radius: inherit;
+  background: linear-gradient(112deg, rgb(255 255 255 / .57) 0%, rgb(255 255 255 / .14) 22%, transparent 47%, rgb(178 209 255 / .16) 76%, rgb(255 255 255 / .28));
+  mask-image: linear-gradient(to bottom, #000, transparent 76%);
+}
+.sidebar { background: linear-gradient(155deg, rgb(255 255 255 / .62), rgb(232 241 255 / .28)); }
+.welcome { background: linear-gradient(125deg, rgb(255 255 255 / .72), rgb(222 234 254 / .26) 68%, rgb(255 255 255 / .42)); }
+.composer { background: linear-gradient(125deg, rgb(255 255 255 / .70), rgb(229 239 255 / .42)); }
+.stage-card, .message { background: linear-gradient(135deg, rgb(255 255 255 / .58), rgb(232 242 255 / .24)); }
+.role-user { background: linear-gradient(135deg, rgb(228 240 255 / .66), rgb(241 234 255 / .48)); }
+
+.quick-card, .workspace-indicator, .secondary-button, .attach-button, .topic.active, .settings-dialog input, .settings-dialog select, .capability-row, .profile-card, .mcp-server-card, .mcp-editor { border-color: rgb(255 255 255 / .76); background-color: rgb(255 255 255 / .34); box-shadow: inset 0 1px rgb(255 255 255 / .72), 0 7px 17px rgb(31 59 101 / .05); }
+.quick-card:hover, .topic.active, .settings-button:hover { background-color: rgb(255 255 255 / .60); box-shadow: inset 0 1px rgb(255 255 255 / .92), 0 13px 30px rgb(36 69 119 / .13); }
+
+.brand-mark, .new-topic, .send-button, .save-button { background: linear-gradient(135deg, #3976cd, #6c68bd 58%, #9468c4); box-shadow: 0 12px 25px rgb(61 100 185 / .28), inset 0 1px rgb(255 255 255 / .38); }
+.new-topic { position: relative; overflow: hidden; }
+.new-topic::after, .send-button::after, .save-button::after { content: ""; position: absolute; inset: 0; transform: translateX(-125%) skewX(-20deg); background: linear-gradient(90deg, transparent, rgb(255 255 255 / .42), transparent); transition: transform .65s ease; }
+.new-topic:hover::after, .send-button:hover::after, .save-button:hover::after { transform: translateX(125%) skewX(-20deg); }
+
+.appearance-toggle { margin-bottom: 5px; border: 1px solid rgb(255 255 255 / .46); background: linear-gradient(115deg, rgb(255 255 255 / .28), rgb(201 221 248 / .18)); }
+.theme-icon { display: grid; place-items: center; width: 21px; height: 21px; border: 1px solid rgb(255 255 255 / .70); border-radius: 8px; color: #4a71a7; background: rgb(255 255 255 / .38); box-shadow: inset 0 1px rgb(255 255 255 / .85), 0 4px 9px rgb(43 70 108 / .10); }
+.appearance-toggle .theme-label { font-weight: 650; }
+.appearance-toggle .theme-hint { grid-column: 2; }
+
+/* Dark mode has neutral ink and restrained blue highlights instead of a bright inversion. */
+:root[data-theme="dark"] { --ink: #e9edf6; --ink-soft: #9faabd; --line: rgb(178 199 232 / .16); --blue: #8eb5ff; --violet: #b6a5ff; --glass-edge: rgb(223 236 255 / .18); --glass-surface: linear-gradient(135deg, rgb(29 39 58 / .70), rgb(18 27 43 / .38) 55%, rgb(63 66 107 / .28)); --glass-shadow: 0 28px 72px rgb(0 0 0 / .32), inset 0 1px rgb(255 255 255 / .15), inset 0 -1px rgb(139 172 243 / .11); }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="dark"] body { background: radial-gradient(circle at 74% 0, #263663 0, transparent 31%), radial-gradient(circle at 10% 90%, #183d4d 0, transparent 36%), #101521; }
+:root[data-theme="dark"] body::before { opacity: .25; }
+:root[data-theme="dark"] .aurora { opacity: .34; filter: blur(54px) saturate(93%); }
+:root[data-theme="dark"] .aurora-one { background: radial-gradient(circle, #486fb5, #584e9c99 42%, transparent 70%); }
+:root[data-theme="dark"] .aurora-two { background: radial-gradient(circle, #276a77, #263e8388 42%, transparent 70%); }
+:root[data-theme="dark"] .sidebar, :root[data-theme="dark"] .welcome, :root[data-theme="dark"] .composer, :root[data-theme="dark"] .stage-card, :root[data-theme="dark"] .message { background: var(--glass-surface); }
+:root[data-theme="dark"] .quick-card, :root[data-theme="dark"] .workspace-indicator, :root[data-theme="dark"] .secondary-button, :root[data-theme="dark"] .attach-button, :root[data-theme="dark"] .topic.active, :root[data-theme="dark"] .settings-dialog input, :root[data-theme="dark"] .settings-dialog select, :root[data-theme="dark"] .capability-row, :root[data-theme="dark"] .profile-card, :root[data-theme="dark"] .mcp-server-card, :root[data-theme="dark"] .mcp-editor { background-color: rgb(20 30 47 / .44); border-color: rgb(210 224 255 / .16); color: var(--ink); }
+:root[data-theme="dark"] .stage-title h3, :root[data-theme="dark"] .section-heading h3, :root[data-theme="dark"] .guide-section h3, :root[data-theme="dark"] .guide-note b, :root[data-theme="dark"] .markdown, :root[data-theme="dark"] .stage-direct, :root[data-theme="dark"] .quick-card b { color: var(--ink); }
+:root[data-theme="dark"] .appearance-toggle { background: linear-gradient(115deg, rgb(55 74 106 / .45), rgb(23 33 52 / .26)); }
+:root[data-theme="dark"] .theme-icon { color: #d0d8ff; background: rgb(104 109 162 / .25); }
+
+/* A stage is a layout rail, not a second panel. Rendering glass on both layers made it look like a metal bar. */
+.stage-message { isolation: auto; background: transparent !important; border: 0 !important; box-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+.stage-message::before { display: none !important; }
+.stage-card { overflow: hidden; }
+.glass::before, .composer::before, .message:not(.stage-message)::before, .stage-card::before, .quick-card::before, .settings-dialog::before {
+  opacity: .56;
+  background: radial-gradient(95% 62% at 12% -8%, rgb(255 255 255 / .62), transparent 48%), linear-gradient(118deg, rgb(255 255 255 / .20), transparent 42%, rgb(176 205 255 / .13) 76%, rgb(255 255 255 / .12));
+  mask-image: none;
+}
+.stage-card::after, .composer::after, .welcome::after {
+  content: ""; position: absolute; pointer-events: none; z-index: -1; inset: 0; border-radius: inherit;
+  background: linear-gradient(105deg, rgb(255 255 255 / .28), transparent 15%, transparent 76%, rgb(167 195 255 / .15));
+}
+
+:root[data-theme="dark"] .stage-card { background: linear-gradient(135deg, rgb(41 55 82 / .62), rgb(23 32 51 / .45) 58%, rgb(66 60 108 / .36)); border-color: rgb(202 218 255 / .20); }
+:root[data-theme="dark"] .role-user { background: linear-gradient(135deg, rgb(49 79 122 / .56), rgb(82 59 126 / .43)); }
+:root[data-theme="dark"] .glass::before, :root[data-theme="dark"] .composer::before, :root[data-theme="dark"] .message:not(.stage-message)::before, :root[data-theme="dark"] .stage-card::before, :root[data-theme="dark"] .quick-card::before, :root[data-theme="dark"] .settings-dialog::before { opacity: .46; background: radial-gradient(100% 64% at 13% -10%, rgb(225 235 255 / .24), transparent 47%), linear-gradient(118deg, rgb(208 224 255 / .10), transparent 47%, rgb(139 128 255 / .13)); }
+:root[data-theme="dark"] .stage-details summary, :root[data-theme="dark"] .stage-details summary span, :root[data-theme="dark"] .step-status, :root[data-theme="dark"] .workflow-plan b, :root[data-theme="dark"] .workflow-plan p, :root[data-theme="dark"] .action-record p, :root[data-theme="dark"] .action-record small, :root[data-theme="dark"] .guide-section p, :root[data-theme="dark"] .guide-note p { color: #c0cadd; }
+:root[data-theme="dark"] .stage-title h3, :root[data-theme="dark"] .workflow-plan b, :root[data-theme="dark"] .action-record h4, :root[data-theme="dark"] .research-layout h4, :root[data-theme="dark"] .action-layout h4 { color: #edf2ff; }
+:root[data-theme="dark"] .source-links a, :root[data-theme="dark"] .action-record a, :root[data-theme="dark"] .stage-details summary span { color: #9fc1ff; }
+
+/* Keep the conversation on one deliberate visual column instead of three drifting left edges. */
+.detail-content { width: min(100%, 940px); }
+.workspace-head { width: min(100%, 940px); margin-inline: auto; }
+.composer { width: min(100%, 940px); align-self: center; }
+.stage-message { max-width: 100%; }
+
+/* Avoid compositor bleed: the former negative-z shine layer escaped from the composer on some GPU paths. */
+.glass::before, .composer::before, .message::before, .stage-card::before, .quick-card::before, .settings-dialog::before,
+.stage-card::after, .composer::after, .welcome::after { content: none !important; display: none !important; }
+.sidebar, .composer, .stage-card, .message:not(.stage-message), .welcome, .settings-dialog { overflow: hidden; }
+.sidebar { isolation: isolate; background: linear-gradient(155deg, rgb(255 255 255 / .64), rgb(224 237 255 / .32) 68%, rgb(221 240 249 / .42)); }
+.composer { z-index: 2; background: linear-gradient(130deg, rgb(255 255 255 / .74), rgb(226 237 255 / .48) 58%, rgb(224 225 255 / .42)); }
+.sidebar-actions { position: relative; z-index: 2; }
+:root[data-theme="dark"] .sidebar { background: linear-gradient(155deg, rgb(38 51 76 / .72), rgb(22 47 68 / .50) 68%, rgb(28 63 84 / .58)); }
+:root[data-theme="dark"] .composer { background: linear-gradient(130deg, rgb(36 48 72 / .80), rgb(21 30 49 / .70) 58%, rgb(53 54 103 / .58)); }
+:root[data-theme="dark"] .stage-card { background: linear-gradient(132deg, rgb(40 52 77 / .63), rgb(24 32 52 / .55) 58%, rgb(46 47 86 / .50)); }
+:root[data-theme="dark"] .message:not(.stage-message) { background: linear-gradient(132deg, rgb(42 59 89 / .69), rgb(42 42 91 / .57)); }
+
+/* Settings controls need explicit dark values; the base white preset controls otherwise wash out their labels. */
+.capability-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; align-items: center; }
+.capability-row select { width: 132px; min-width: 132px; flex: none; }
+:root[data-theme="dark"] .settings-dialog { color: #edf2fb; }
+:root[data-theme="dark"] .settings-dialog .dialog-subtitle, :root[data-theme="dark"] .settings-dialog .section-heading p { color: #b8c4d6; }
+:root[data-theme="dark"] .permission-presets button { border-color: rgb(194 214 255 / .28); background: rgb(29 40 61 / .62); color: #c9d5e9; box-shadow: inset 0 1px rgb(255 255 255 / .09); }
+:root[data-theme="dark"] .permission-presets button:hover { background: rgb(61 82 119 / .52); color: #f2f6ff; }
+:root[data-theme="dark"] .permission-presets button.active { border-color: #78a8ff; background: linear-gradient(135deg, rgb(52 103 188 / .74), rgb(78 67 160 / .70)); color: #f7faff; box-shadow: inset 0 1px rgb(255 255 255 / .25), 0 7px 16px rgb(16 52 112 / .20); }
+:root[data-theme="dark"] .capability-row b { color: #edf2fb; }
+:root[data-theme="dark"] .capability-row small { color: #b5c1d3; }
+:root[data-theme="dark"] .capability-row select { border-color: rgb(190 210 250 / .28); background: rgb(18 28 46 / .74); color: #edf2fb; }
+:root[data-theme="dark"] .capability-row select option { background: #1b2942; color: #edf2fb; }
+:root[data-theme="dark"] .recommended-badge { border-color: rgb(112 226 192 / .48); background: rgb(30 151 120 / .20); color: #aaf5dc; }
+
+@media (prefers-reduced-motion: no-preference) { .aurora { animation-duration: 21s; } .glass::before, .composer::before { animation: glass-shimmer 12s ease-in-out infinite alternate; } }
+@keyframes glass-shimmer { from { opacity: .55; transform: translate3d(-1%, -1%, 0); } to { opacity: .94; transform: translate3d(1%, 1%, 0); } }
+
+/* Sidebar controls use a fixed two-column grid: moving a hovered item causes edge flicker. */
+.sidebar-actions { gap: 7px; }
+.settings-button { grid-template-columns: 22px minmax(0, 1fr); align-items: center; min-height: 48px; }
+.settings-button .nav-icon, .settings-button .theme-icon { grid-column: 1; grid-row: 1; }
+.settings-button > span:not(.nav-icon):not(.theme-icon) { grid-column: 2; grid-row: 1; min-width: 0; }
+.settings-button small { grid-column: 2; grid-row: 2; min-width: 0; }
+.sidebar-actions .settings-button { transform: none; transition: background-color .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.sidebar-actions .settings-button:hover, .sidebar-actions .settings-button:focus-visible { transform: none; }
+.nav-icon { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 8px; color: #617b9e; font-size: 15px; line-height: 1; }
+.sidebar-actions .settings-button:hover .nav-icon { background: rgb(255 255 255 / .44); box-shadow: inset 0 1px rgb(255 255 255 / .76); }
+:root[data-theme="dark"] .nav-icon { color: #c7d4f0; }
+:root[data-theme="dark"] .sidebar-actions .settings-button:hover, :root[data-theme="dark"] .sidebar-actions .settings-button:focus-visible { background: rgb(96 124 174 / .20); border-color: rgb(211 225 255 / .22); box-shadow: inset 0 1px rgb(255 255 255 / .10), 0 7px 16px rgb(0 0 0 / .15); }

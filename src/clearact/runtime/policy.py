@@ -4,7 +4,7 @@ from clearact.domain.models import PolicyDecision, RiskAssessment, UserPolicy
 
 class PolicyEngine:
     def decide(self, assessment: RiskAssessment, policy: UserPolicy, tool_name: str | None = None) -> PolicyDecision:
-        if tool_name in {"list_files", "read_file"} and not policy.allow_read:
+        if tool_name in {"list_files", "read_file", "read_pdf"} and not policy.allow_read:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用本地读取操作。")
         if tool_name == "write_file" and not policy.allow_write:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用本地写入操作。")

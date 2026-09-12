@@ -813,6 +813,7 @@ async def start_run(request: StartRunRequest) -> dict:
                         "or fetch_url calls and keep its web actions in that phase; the interface will "
                         "show its search queries, source links, and fetch status in a fixed research layout. "
                         "If editing files is needed, declare a dedicated file-work phase before file actions. "
+                        "Use read_pdf for PDF attachments; do not substitute web searches for an uploaded PDF. "
                         f"Today's date is {date.today().isoformat()}. "
                         "For a current-data report: 'latest' means the newest publication available today, "
                         "not a quarter or year you assume. Use focused discovery searches. First search the "

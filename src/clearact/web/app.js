@@ -8,6 +8,24 @@ let selectedWorkdir = null;
 let editingMcpName = null;
 let pendingFiles = [];
 const openStepDetails = new Set();
+let appearance = localStorage.getItem("clearact-appearance") || "sun";
+
+function renderAppearance() {
+  const dark = appearance === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "sun";
+  const button = $("#theme-toggle");
+  if (!button) return;
+  button.querySelector(".theme-icon").textContent = dark ? "☾" : "☼";
+  button.querySelector(".theme-label").textContent = dark ? (language === "zh" ? "黑暗模式" : "Dark mode") : (language === "zh" ? "阳光模式" : "Sun mode");
+  button.querySelector(".theme-hint").textContent = dark ? (language === "zh" ? "切换至阳光模式" : "Switch to sun mode") : (language === "zh" ? "切换至黑暗模式" : "Switch to dark mode");
+  button.setAttribute("aria-label", dark ? (language === "zh" ? "切换至阳光模式" : "Switch to sun mode") : (language === "zh" ? "切换至黑暗模式" : "Switch to dark mode"));
+}
+
+function toggleAppearance() {
+  appearance = appearance === "dark" ? "sun" : "dark";
+  localStorage.setItem("clearact-appearance", appearance);
+  renderAppearance();
+}
 
 const text = {
   zh: {newTopic:"新建话题",history:"过往话题",settings:"设置",settingsHint:"权限、模型与扩展",guide:"使用指南",guideHint:"第一次使用先看这里",welcomeTitle:"把目标告诉我，剩下的交给 ClearAct",welcomeHint:"你不需要先选择工具。直接描述想完成的事情，我会根据任务自动使用文件、网页和已接入的 MCP 能力。",exampleFiles:"处理本地文件",exampleFilesHint:"选择文件夹后读取、分析或生成文件",exampleMcp:"接入新能力",exampleMcpHint:"选择连接方式，ClearAct 完成配置",openGuide:"查看完整使用指南",guideStep1:"先描述目标",guideStep1Text:"在底部输入框用自然语言说清楚要完成什么。",guideStep2:"观察与调整",guideStep2Text:"任务会先被拆成贴合目标的阶段，再逐步显现。展开阶段可检查过程，也可带着反馈从这里重新执行。",guideStep3:"接入新的能力",guideStep3Text:"在设置中选择远程 URL 或本地命令，填写服务商给出的信息，ClearAct 会保存并测试连接。",mcpRegistryHint:"官方服务注册表",mcpOfficialHint:"官方参考服务",mcpSmitheryHint:"社区 MCP 目录",mcpGlamaHint:"社区 MCP 目录",mcpSourceNote:"第三方服务并非天然可信，请核对发布者和所需权限。",guidePermissionTitle:"权限怎么选？",guidePermissionText:"默认“日常”会自动完成读取和工作区文件修改；外部写入、工作区外写入及破坏性操作仍会先询问。",gotIt:"知道了",connected:"本地网关已连接",placeholder:"告诉 ClearAct 你希望完成什么…",attach:"添加文件或图片",uploading:"正在上传附件…",attachmentGoal:"请处理我上传的附件",workspace:"工作区",workspaceChanged:"工作区已切换",send:"发送",stop:"停止运行",language:"界面语言",maxIterations:"最大迭代",maxTools:"最大工具调用",defaultProfile:"默认 Profile",save:"保存配置",cancel:"取消",confirm:"确定",rename:"重命名",delete:"删除",user:"你",running:"运行中",completed:"已完成",failed:"失败",cancelled:"已停止",created:"准备中",waiting_approval:"等待确认",reasoning:"模型公开说明",reasoningHint:"这里仅展示模型/API 明确返回的公开内容，不尝试还原隐藏思维链。",feedbackHint:"说明你希望怎样调整；将保留此前已完成阶段",restart:"从此阶段重新执行",searches:"检索记录",pages:"已访问网页",files:"文件操作",noSources:"尚无可打开的来源。",success:"成功",denied:"被策略阻止",failedAction:"操作失败",approvalTitle:"确认操作",approveAction:"允许",denyAction:"拒绝"},
@@ -18,7 +36,7 @@ const t = (key) => text[language]?.[key] || key;
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 function safeHttpUrl(value) { try { const url = new URL(String(value)); return ["http:", "https:"].includes(url.protocol) ? url.href : ""; } catch { return ""; } }
 async function json(url, options) { const response = await fetch(url, options); const body = response.status === 204 ? null : await response.json(); if (!response.ok) throw new Error(body?.detail || "Request failed"); return body; }
-function applyLanguage() { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; document.querySelectorAll("[data-i18n]").forEach((node) => node.textContent = t(node.dataset.i18n)); document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.placeholder = t(node.dataset.i18nPlaceholder)); document.querySelectorAll("[data-i18n-title]").forEach((node) => node.title = t(node.dataset.i18nTitle)); }
+function applyLanguage() { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; document.querySelectorAll("[data-i18n]").forEach((node) => node.textContent = t(node.dataset.i18n)); document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.placeholder = t(node.dataset.i18nPlaceholder)); document.querySelectorAll("[data-i18n-title]").forEach((node) => node.title = t(node.dataset.i18nTitle)); renderAppearance(); }
 function setWorkspace(path) { const effective = path || config?.default_workdir || ""; selectedWorkdir = effective || null; $("#workspace-path").textContent = effective; $("#workspace-indicator").title = effective ? `${t("workspace")}: ${effective}` : t("workspace"); }
 function readableSize(bytes) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1048576).toFixed(1)} MB`; }
 function renderPendingFiles() { const root = $("#attachment-list"); root.replaceChildren(); pendingFiles.forEach((file,index) => { const chip = document.createElement("span"); chip.className = "attachment-chip"; const label = document.createElement("span"); label.textContent = `${file.type.startsWith("image/") ? "🖼" : "📄"} ${file.name} · ${readableSize(file.size)}`; const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "×"; remove.onclick = () => { pendingFiles.splice(index,1); renderPendingFiles(); }; chip.append(label,remove); root.appendChild(chip); }); root.classList.toggle("hidden", !pendingFiles.length); }
@@ -46,7 +64,7 @@ function workflowData(detail) {
   detail.run.messages.forEach((message, messageIndex) => message.tool_calls?.filter((action) => !["declare_workflow_plan", "declare_workflow_step"].includes(action.tool_name)).forEach((action) => calls.push({...action, messageIndex})));
   return {steps: detail.run.workflow_steps || [], calls};
 }
-function actionStatus(result) { const status = result?.metadata?.status; if (status === "succeeded") return t("success"); if (status === "denied") return t("denied"); if (["failed","cancelled"].includes(status)) return `${t("failedAction")}：${escape(result?.metadata?.error || result?.content || "")}`; return language === "zh" ? "进行中" : "In progress"; }
+function actionStatus(result) { const status = result?.metadata?.status; if (status === "succeeded") return t("success"); if (status === "skipped") return language === "zh" ? "已跳过重复操作" : "Skipped as redundant"; if (status === "denied") return t("denied"); if (["failed","cancelled"].includes(status)) return `${t("failedAction")}：${escape(result?.metadata?.error || result?.content || "")}`; return language === "zh" ? "进行中" : "In progress"; }
 function reasoningHtml(detail, step) { const ids = new Set(step.action_ids || []); const reasoning = detail.run.messages.filter((message) => message.role === "assistant" && message.reasoning_content?.trim() && message.tool_calls?.some((action) => ids.has(action.id))).map((message) => message.reasoning_content.trim()); return reasoning.length ? `<details class="reasoning-details"><summary>${t("reasoning")}<span>${language === "zh" ? "展开" : "Expand"}</span></summary><div class="reasoning-content"><p class="reasoning-hint">${t("reasoningHint")}</p>${reasoning.map(markdown).join("")}</div></details>` : ""; }
 function researchLayout(detail, actions) {
   const results = resultMap(detail), searches = actions.filter((action) => action.tool_name === "web_search"), pages = actions.filter((action) => action.tool_name === "fetch_url");
@@ -132,6 +150,8 @@ $("#guide-trigger").onclick = () => $("#guide-dialog").showModal(); $("#welcome-
 async function chooseWorkdir() { try { const result = await json("/api/select-directory", {method:"POST"}); if (result.path) { setWorkspace(result.path); $("#feedback").textContent = t("workspaceChanged"); $("#goal").focus(); } } catch (error) { $("#feedback").textContent = error.message; } }
 $("#choose-workdir").onclick = chooseWorkdir;
 $("#workspace-indicator").onclick = chooseWorkdir;
+$("#theme-toggle").onclick = toggleAppearance;
+renderAppearance();
 $("#attach-files").onclick = () => $("#file-input").click();
 $("#file-input").onchange = () => { const input = $("#file-input"), additions = [...input.files]; input.value = ""; const combined = [...pendingFiles,...additions]; if (combined.length > 8) { $("#feedback").textContent = language === "zh" ? "一次最多上传 8 个附件" : "Up to 8 attachments per message"; return; } if (combined.some((file) => file.size > 12 * 1024 * 1024) || combined.reduce((sum,file) => sum + file.size,0) > 32 * 1024 * 1024) { $("#feedback").textContent = language === "zh" ? "单个附件不能超过 12 MB，总计不能超过 32 MB" : "Each attachment must be under 12 MB and the total under 32 MB"; return; } pendingFiles = combined; $("#feedback").textContent = ""; renderPendingFiles(); };
 $("#open-mcp-quick").onclick = async () => { await openSettings(); openMcpEditor(); $("#mcp-settings").scrollIntoView({behavior:"smooth"}); };

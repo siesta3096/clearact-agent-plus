@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
+
+from pypdf import PdfReader
 
 from clearact.domain.errors import ScopeViolationError, ToolValidationError
 from clearact.domain.models import ToolDefinition, ToolResult
@@ -57,11 +60,16 @@ class ListFilesTool(_FilesystemTool):
             {"path": str(path), "type": "directory" if path.is_dir() else "file"}
             for path in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
         ]
+        visible_entries = entries[:100]
+        listing = "\n".join(f"- {item['type']}: {item['path']}" for item in visible_entries)
         return ToolResult(
             action_id=action_id,
             tool_name=self.name,
             ok=True,
-            content=f"Found {len(entries)} entries in {target}.",
+            content=(
+                f"Found {len(entries)} entries in {target}.\n{listing}"
+                + ("\n- … additional entries omitted" if len(entries) > len(visible_entries) else "")
+            ),
             metadata={"entries": entries, "path": str(target)},
         )
 
@@ -102,6 +110,67 @@ class ReadFileTool(_FilesystemTool):
             ok=True,
             content=content[:max_chars],
             metadata={"path": str(target), "truncated": len(content) > max_chars},
+        )
+
+
+class ReadPdfTool(_FilesystemTool):
+    """Extract user-visible text from uploaded or workspace PDF files."""
+
+    name = "read_pdf"
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=(
+                "Extract text from a PDF in the workspace. Use this for uploaded PDF attachments instead of "
+                "read_file. Relative paths are under the workspace."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "max_chars": {"type": "integer", "minimum": 1, "default": 30000},
+                },
+                "required": ["path"],
+            },
+        )
+
+    async def execute(self, arguments: dict, context: ToolContext, action_id: str) -> ToolResult:
+        raw_path, max_chars = arguments.get("path"), arguments.get("max_chars", 30000)
+        if not isinstance(raw_path, str) or not isinstance(max_chars, int) or max_chars < 1:
+            raise ToolValidationError("path and max_chars are invalid")
+        target = self._resolve(context, raw_path)
+        if not target.is_file():
+            raise ToolValidationError("path must be an existing file")
+        if target.suffix.lower() != ".pdf":
+            raise ToolValidationError("read_pdf only supports PDF files")
+
+        def extract() -> tuple[str, int]:
+            reader = PdfReader(str(target))
+            chunks: list[str] = []
+            length = 0
+            for page in reader.pages:
+                chunk = page.extract_text() or ""
+                chunks.append(chunk)
+                length += len(chunk)
+                if length >= max_chars:
+                    break
+            return "\n\n".join(chunks), len(reader.pages)
+
+        try:
+            content, page_count = await asyncio.to_thread(extract)
+        except Exception as exc:
+            raise ToolValidationError(f"could not extract text from PDF: {exc}") from exc
+        if not content.strip():
+            raise ToolValidationError(
+                "PDF contains no extractable text; upload page images or use a vision-capable model"
+            )
+        return ToolResult(
+            action_id=action_id,
+            tool_name=self.name,
+            ok=True,
+            content=content[:max_chars],
+            metadata={"path": str(target), "page_count": page_count, "truncated": len(content) > max_chars},
         )
 
 

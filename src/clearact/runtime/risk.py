@@ -20,7 +20,7 @@ class RiskEvaluator:
                 reasons=["该操作属于必须单独确认的重大外部或系统行为。"],
                 category="destructive",
             )
-        if action.tool_name in {"web_search", "fetch_url", "list_files", "read_file"}:
+        if action.tool_name in {"web_search", "fetch_url", "list_files", "read_file", "read_pdf"}:
             category = "web_read" if action.tool_name in {"web_search", "fetch_url"} else "local_read"
             return RiskAssessment(level=RiskLevel.WHITE, reasons=["只读操作，不会改变状态。"], category=category)
         if action.tool_name.startswith("mcp__"):

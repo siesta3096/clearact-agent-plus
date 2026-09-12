@@ -27,7 +27,7 @@ from clearact.storage.checkpoint_store import CheckpointStore
 from clearact.storage.run_store import RunStore
 from clearact.storage.snapshots import SnapshotStore
 from clearact.tools.base import ToolContext
-from clearact.tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
+from clearact.tools.filesystem import ListFilesTool, ReadFileTool, ReadPdfTool, WriteFileTool
 from clearact.tools.mcp import MCPManager, MCPTool
 from clearact.tools.registry import ToolRegistry
 from clearact.tools.web import FetchUrlTool, WebSearchTool
@@ -187,6 +187,7 @@ async def _run(
         DeclareWorkflowStepTool(),
         ListFilesTool(),
         ReadFileTool(),
+        ReadPdfTool(),
         WriteFileTool(),
         WebSearchTool(),
         FetchUrlTool(),
@@ -223,6 +224,7 @@ async def _run(
                         "will show its search queries, source links, and fetch status in a fixed research layout. "
                         "If editing files is needed, "
                         "declare a dedicated file-work phase before file actions. "
+                        "Use read_pdf for PDF attachments; do not substitute web searches for an uploaded PDF. "
                         f"Today's date is {date.today().isoformat()}. "
                         "For a current-data report: 'latest' means the newest publication available today, "
                         "not a quarter or year you assume. Use focused discovery searches. First search the "

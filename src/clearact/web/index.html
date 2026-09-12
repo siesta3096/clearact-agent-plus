@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ClearAct</title>
-  <link rel="stylesheet" href="/assets/style.css?v=20260912-6">
+  <link rel="stylesheet" href="/assets/style.css?v=20260912-7">
+  <link rel="stylesheet" href="/assets/glass-theme.css?v=20260912-5">
 </head>
 <body>
   <div class="aurora aurora-one"></div><div class="aurora aurora-two"></div>
@@ -13,7 +14,7 @@
       <div class="brand"><span class="brand-mark">✦</span><div><b>ClearAct</b><small>LOCAL AGENT</small></div></div>
       <button id="new-topic" class="new-topic">＋ <span data-i18n="newTopic">新建话题</span><kbd>Ctrl K</kbd></button>
       <nav class="topic-nav"><div class="nav-label"><span data-i18n="history">过往话题</span><span id="run-count">—</span></div><div id="runs" class="topic-list"></div></nav>
-      <div class="sidebar-actions"><button id="guide-trigger" class="settings-button">？ <span data-i18n="guide">使用指南</span><small data-i18n="guideHint">第一次使用先看这里</small></button><button id="settings-trigger" class="settings-button">⚙ <span data-i18n="settings">设置</span><small data-i18n="settingsHint">权限、模型与扩展</small></button></div>
+      <div class="sidebar-actions"><button id="theme-toggle" class="settings-button appearance-toggle" type="button" aria-label="切换显示模式"><span class="theme-icon">☼</span><span class="theme-label">阳光模式</span><small class="theme-hint">切换至黑暗模式</small></button><button id="guide-trigger" class="settings-button"><span class="nav-icon">？</span><span data-i18n="guide">使用指南</span><small data-i18n="guideHint">第一次使用先看这里</small></button><button id="settings-trigger" class="settings-button"><span class="nav-icon">⚙</span><span data-i18n="settings">设置</span><small data-i18n="settingsHint">权限、模型与扩展</small></button></div>
     </aside>
     <main class="workspace">
       <header class="workspace-head"><h1 id="topic-title" data-i18n="newTopic">新建话题</h1><div class="live-status"><i></i><span data-i18n="connected">本地网关已连接</span><button id="stop-run" type="button" class="stop-button hidden" data-i18n="stop">停止运行</button></div></header>
@@ -33,6 +34,6 @@
 
   <dialog id="topic-dialog" class="settings-dialog glass"><form id="topic-form"><header><h2 id="topic-dialog-title">话题操作</h2><button class="close-button" type="button" data-close="topic-dialog">×</button></header><div class="settings-body"><input id="topic-input"><p id="topic-delete-warning" class="muted hidden">删除后无法恢复。</p></div><footer><button type="button" class="secondary-button" data-close="topic-dialog" data-i18n="cancel">取消</button><button type="button" id="topic-delete" class="danger-button" data-i18n="delete">删除</button><button type="submit" class="save-button" data-i18n="confirm">确定</button></footer></form></dialog>
   <dialog id="approval-dialog" class="settings-dialog glass"><header><h2 data-i18n="approvalTitle">确认操作</h2></header><div class="settings-body"><p id="approval-summary"></p><pre id="approval-arguments"></pre></div><footer><button type="button" id="deny-approval" class="secondary-button" data-i18n="denyAction">拒绝</button><button type="button" id="grant-approval" class="save-button" data-i18n="approveAction">允许</button></footer></dialog>
-  <script src="/assets/app.js?v=20260912-6"></script>
+  <script src="/assets/app.js?v=20260912-7"></script>
 </body>
 </html>

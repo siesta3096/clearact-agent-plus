@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 
@@ -204,6 +206,19 @@ class AgentRunner:
                         raise RuntimeError(f"Agent reached the maximum tool-call limit ({self._max_tool_calls}).")
                     self._attach_action_to_step(run, action, assistant_message_index)
                     assessment = self._risk_evaluator.assess(action)
+                    guard_reason = self._guard_read_only_action(run, action)
+                    if guard_reason:
+                        run.messages.append(
+                            ChatMessage(
+                                role="tool",
+                                name=action.tool_name,
+                                tool_call_id=action.id,
+                                content=guard_reason,
+                                metadata={"status": "skipped", "reason": "execution_guard"},
+                            )
+                        )
+                        self._run_store.save_run(run)
+                        continue
                     decision = self._policy_engine.decide(assessment, run.policy, action.tool_name)
                     stage, title, detail = self._stage_mapper.map(action, assessment.level)
                     if decision.outcome == DecisionOutcome.DENY:
@@ -388,6 +403,77 @@ class AgentRunner:
                         )
                 return
             return
+
+    def _guard_read_only_action(self, run: Run, action: Action) -> str | None:
+        """Prevent repeated inspection loops while retaining all prior evidence."""
+        signature = self._read_only_signature(action)
+        if signature and signature in self._completed_read_only_signatures(run):
+            return (
+                "Skipped: this exact read-only operation already completed earlier in the task. "
+                "Use its recorded result and proceed to analysis, generation, or a targeted user question."
+            )
+        if action.tool_name in {"web_search", "fetch_url"} and self._is_attachment_led_task(run):
+            web_attempts = sum(
+                1
+                for message in run.messages
+                if message.role == "tool"
+                and message.name in {"web_search", "fetch_url"}
+                and message.metadata.get("status") in {"succeeded", "skipped"}
+            )
+            if web_attempts >= 1:
+                return (
+                    "Skipped: this task is driven by uploaded local material and has already used its single "
+                    "fallback web lookup. Do not continue researching; use the attachment evidence and proceed."
+                )
+        return None
+
+    def _completed_read_only_signatures(self, run: Run) -> set[str]:
+        actions = {
+            action.id: action
+            for message in run.messages
+            for action in message.tool_calls
+        }
+        return {
+            signature
+            for message in run.messages
+            if message.role == "tool" and message.metadata.get("status") == "succeeded"
+            for signature in [self._read_only_signature(actions.get(message.tool_call_id or ""))]
+            if signature
+        }
+
+    def _read_only_signature(self, action: Action | None) -> str | None:
+        if action is None:
+            return None
+        if action.tool_name in {"list_files", "read_file", "read_pdf"}:
+            path = action.arguments.get("path")
+            if not isinstance(path, str):
+                return None
+            candidate = Path(path).expanduser()
+            target = (
+                candidate.resolve()
+                if candidate.is_absolute()
+                else (self._tool_context.workspace_root / candidate).resolve()
+            )
+            return f"{action.tool_name}:{target}"
+        if action.tool_name == "web_search":
+            query = action.arguments.get("query")
+            if not isinstance(query, str):
+                return None
+            normalized_query = re.sub(r"\s+", " ", query).strip().casefold()
+            return f"web_search:{normalized_query}"
+        if action.tool_name == "fetch_url":
+            url = action.arguments.get("url")
+            return f"fetch_url:{url.strip()}" if isinstance(url, str) else None
+        return None
+
+    @staticmethod
+    def _is_attachment_led_task(run: Run) -> bool:
+        user_messages = [message for message in run.messages if message.role == "user"]
+        if not any(message.metadata.get("attachments") for message in user_messages):
+            return False
+        prompt = " ".join(message.content or "" for message in user_messages).casefold()
+        web_intent = ("联网", "搜索", "查资料", "网页", "网上", "最新", "research", "search", "web")
+        return not any(term in prompt for term in web_intent)
 
     def _record_workflow_plan(self, run: Run, action: Action) -> None:
         """Validate and persist a public plan; never expose hidden model reasoning."""
