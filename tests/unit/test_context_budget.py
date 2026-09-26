@@ -107,17 +107,27 @@ def test_compaction_accepts_essential_context_that_exactly_fits_without_inventin
     assert all(any(message is original for original in history) for message in selected)
 
 
-@pytest.mark.parametrize("field", ["arguments", "reasoning", "metadata"])
+@pytest.mark.parametrize("field", ["arguments", "reasoning"])
 def test_budget_counts_large_non_content_fields(field):
     message = ChatMessage(role="assistant")
     if field == "arguments":
         message.tool_calls = [Action(tool_name="write_file", arguments={"content": "x" * 100_000})]
     elif field == "reasoning":
         message.reasoning_content = "x" * 100_000
-    else:
-        message.metadata = {"content": "x" * 100_000}
-
     assert ContextBudget(4096, 0.7).exceeds([message], [])
+
+
+def test_budget_excludes_unsent_metadata_but_counts_attachment_references():
+    budget = ContextBudget(4096, 0.7)
+    plain = ChatMessage(role="tool", content="short", metadata={"entries": "x" * 100_000})
+    assert not budget.exceeds([plain], [])
+
+    attached = ChatMessage(
+        role="user",
+        content="Review this file",
+        metadata={"attachments": [{"name": "x" * 4_000, "path": "note.txt", "media_type": "text/plain"}]},
+    )
+    assert budget.exceeds([attached], [])
 
 
 @pytest.mark.parametrize("oversized", ["system", "original_goal", "latest_goal", "latest_transaction", "tools"])

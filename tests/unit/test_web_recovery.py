@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -12,8 +13,9 @@ from clearact.domain.enums import RiskLevel, RunStatus
 from clearact.domain.models import (
     Action,
     ChatMessage,
-    LLMResponse,
+    RiskAssessment,
     Run,
+    RunEvent,
     UserPolicy,
     WorkflowPlanItem,
     WorkflowStep,
@@ -36,23 +38,134 @@ def web_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(webapp, "load_settings", lambda root: settings)
     monkeypatch.setattr(webapp, "_active_tasks", {})
     monkeypatch.setattr(webapp, "_active_runs", {})
-    monkeypatch.setattr(webapp, "_title_tasks", {})
-
-    class TitleProvider:
-        async def chat(self, messages, tools):
-            return LLMResponse(content="Generated title")
-
-    monkeypatch.setattr(webapp.cli, "_build_provider", lambda profile: TitleProvider())
+    monkeypatch.setattr(webapp, "_pending_approvals", {})
     return settings, RunStore(settings.data_root)
 
 
 async def finish_run(run_id):
     task = webapp._active_tasks.get(run_id)
-    title_task = webapp._title_tasks.get(run_id)
     if task is not None:
         await task
-    if title_task is not None:
-        await title_task
+
+
+def test_new_topic_starts_execution_without_extra_model_request(web_environment, monkeypatch):
+    _, store = web_environment
+    calls = []
+
+    async def execute(*args, run, **kwargs):
+        calls.append(run.id)
+        run.status = RunStatus.COMPLETED
+        store.save_run(run)
+
+    def unexpected_provider(profile):
+        raise AssertionError("Starting a topic must not request a separate model-generated title")
+
+    monkeypatch.setattr(webapp.cli, "_run", execute)
+    monkeypatch.setattr(webapp.cli, "_build_provider", unexpected_provider)
+
+    async def scenario():
+        goal = "Summarize the uploaded documents and identify follow-up tasks"
+        response = await webapp.start_run(webapp.StartRunRequest(goal=goal))
+        await finish_run(response["run_id"])
+        listing = await webapp.runs()
+        assert calls == [response["run_id"]]
+        saved = store.load_run(response["run_id"])
+        assert saved.title is None
+        assert saved.messages[0].content == webapp.system_prompt(goal, "zh")
+        assert listing[0]["title"] == goal[:28]
+
+    asyncio.run(scenario())
+
+
+def test_workspace_browser_lists_folders_and_path_can_be_validated(web_environment):
+    settings, _ = web_environment
+    child = settings.workspace_root / "reports"
+    child.mkdir()
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=webapp.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            browsed = await client.get("/api/workspaces/browse", params={"path": str(settings.workspace_root)})
+            assert browsed.status_code == 200
+            assert browsed.json()["path"] == str(settings.workspace_root)
+            assert {item["name"] for item in browsed.json()["directories"]} == {"reports"}
+            filtered = await client.get(
+                "/api/workspaces/browse", params={"path": str(settings.workspace_root), "query": "missing"}
+            )
+            assert filtered.json()["directories"] == []
+            accepted = await client.post("/api/workspaces/validate", json={"path": str(settings.workspace_root)})
+            assert accepted.status_code == 200
+            assert accepted.json()["path"] == str(settings.workspace_root)
+            missing = await client.post(
+                "/api/workspaces/validate", json={"path": str(settings.workspace_root / "missing")}
+            )
+            assert missing.status_code == 422
+            invalid_browse = await client.get(
+                "/api/workspaces/browse", params={"path": str(settings.workspace_root / "missing")}
+            )
+            assert invalid_browse.status_code == 422
+
+    asyncio.run(scenario())
+
+
+def test_run_detail_etag_tracks_files_and_approval_without_parsing_unchanged_history(
+    web_environment, monkeypatch,
+):
+    _, store = web_environment
+    run = Run(goal="Track this task")
+    store.save_run(run)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=webapp.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            url = f"/api/runs/{run.id}"
+            first = await client.get(url)
+            assert first.status_code == 200
+            first_etag = first.headers["etag"]
+
+            def unexpected_parse(*args, **kwargs):
+                raise AssertionError("An unchanged run should not be parsed again")
+
+            with monkeypatch.context() as guard:
+                guard.setattr(RunStore, "load_run", unexpected_parse)
+                guard.setattr(RunStore, "load_events", unexpected_parse)
+                unchanged = await client.get(url, headers={"If-None-Match": first_etag})
+            assert unchanged.status_code == 304
+            assert not unchanged.content
+
+            run.title = "Updated title"
+            store.save_run(run)
+            updated = await client.get(url, headers={"If-None-Match": first_etag})
+            assert updated.status_code == 200
+            assert updated.json()["run"]["title"] == "Updated title"
+            assert updated.headers["etag"] != first_etag
+
+            store.append_event(RunEvent(type="progress", run_id=run.id, title="Step done"))
+            event_update = await client.get(url, headers={"If-None-Match": updated.headers["etag"]})
+            assert event_update.status_code == 200
+            assert len(event_update.json()["events"]) == 1
+            assert event_update.headers["etag"] != updated.headers["etag"]
+
+            action = Action(id="act_pending", tool_name="write_file", arguments={"path": "out.txt"})
+            future = asyncio.get_running_loop().create_future()
+            webapp._pending_approvals[run.id] = {
+                "action": action,
+                "assessment": RiskAssessment(level=RiskLevel.YELLOW, reasons=["writes a file"]),
+                "future": future,
+            }
+            approval = await client.get(url, headers={"If-None-Match": event_update.headers["etag"]})
+            assert approval.status_code == 200
+            assert approval.json()["approval"]["action_id"] == action.id
+            future.set_result(True)
+            decided = await client.get(url, headers={"If-None-Match": approval.headers["etag"]})
+            assert decided.status_code == 200
+            assert decided.json()["approval"] is None
+
+            assert (await client.delete(url)).status_code == 200
+            deleted = await client.get(url, headers={"If-None-Match": decided.headers["etag"]})
+            assert deleted.status_code == 404
+
+    asyncio.run(scenario())
 
 
 def test_uploaded_attachment_is_copied_into_workspace_and_recorded(web_environment, monkeypatch):
@@ -203,7 +316,7 @@ def test_resume_rejects_missing_original_directory(web_environment, tmp_path):
     assert store.load_run(run.id).messages == []
 
 
-def test_initialization_failure_is_visible_and_title_cannot_restore_created(web_environment, monkeypatch):
+def test_initialization_failure_is_visible(web_environment, monkeypatch):
     _, store = web_environment
 
     async def execute(*args, run, **kwargs):
@@ -229,11 +342,11 @@ def test_initialization_failure_is_visible_and_title_cannot_restore_created(web_
     asyncio.run(scenario())
 
 
-def test_stop_keeps_cancellation_cleanup_and_cancels_slow_title(web_environment, monkeypatch):
+def test_stop_keeps_cancellation_cleanup(web_environment, monkeypatch):
     _, store = web_environment
 
     async def scenario():
-        executing, title_started = asyncio.Event(), asyncio.Event()
+        executing = asyncio.Event()
 
         async def execute(*args, run, **kwargs):
             run.status = RunStatus.RUNNING
@@ -248,62 +361,41 @@ def test_stop_keeps_cancellation_cleanup_and_cancels_slow_title(web_environment,
                 store.save_run(latest)
                 raise
 
-        class SlowTitle:
-            async def chat(self, messages, tools):
-                title_started.set()
-                await asyncio.Event().wait()
-
         monkeypatch.setattr(webapp.cli, "_run", execute)
-        monkeypatch.setattr(webapp.cli, "_build_provider", lambda profile: SlowTitle())
         response = await webapp.start_run(webapp.StartRunRequest(goal="test"))
         await executing.wait()
-        await title_started.wait()
-        title_task = webapp._title_tasks[response["run_id"]]
         await webapp.stop_run(response["run_id"])
         saved = store.load_run(response["run_id"])
         assert saved.status == RunStatus.CANCELLED
         assert saved.messages[-1].content == "cancelled tool result"
-        assert title_task.cancelled()
 
     asyncio.run(scenario())
 
 
-def test_delete_cancels_title_and_does_not_recreate_topic(web_environment, monkeypatch):
+def test_delete_completed_topic(web_environment, monkeypatch):
     _, store = web_environment
 
     async def scenario():
-        title_started = asyncio.Event()
-
         async def execute(*args, run, **kwargs):
             run.status = RunStatus.COMPLETED
             store.save_run(run)
 
-        class SlowTitle:
-            async def chat(self, messages, tools):
-                title_started.set()
-                await asyncio.Event().wait()
-
         monkeypatch.setattr(webapp.cli, "_run", execute)
-        monkeypatch.setattr(webapp.cli, "_build_provider", lambda profile: SlowTitle())
         response = await webapp.start_run(webapp.StartRunRequest(goal="test"))
-        task = webapp._active_tasks[response["run_id"]]
-        await title_started.wait()
-        await task
-        title_task = webapp._title_tasks[response["run_id"]]
+        await finish_run(response["run_id"])
         await webapp.delete_run(response["run_id"])
-        assert title_task.cancelled()
         with pytest.raises(FileNotFoundError):
             store.load_run(response["run_id"])
 
     asyncio.run(scenario())
 
 
-def test_manual_rename_survives_title_response_and_further_execution(web_environment, monkeypatch):
+def test_manual_rename_survives_current_and_follow_up_execution(web_environment, monkeypatch):
     _, store = web_environment
 
     async def scenario():
-        started, title_started = asyncio.Event(), asyncio.Event()
-        finish, title_ready = asyncio.Event(), asyncio.Event()
+        started = asyncio.Event()
+        finish = asyncio.Event()
 
         async def execute(*args, run, **kwargs):
             run.status = RunStatus.RUNNING
@@ -314,22 +406,13 @@ def test_manual_rename_survives_title_response_and_further_execution(web_environ
             run.status = RunStatus.COMPLETED
             store.save_run(run)
 
-        class SlowTitle:
-            async def chat(self, messages, tools):
-                title_started.set()
-                await title_ready.wait()
-                return LLMResponse(content="Late automatic title")
-
         monkeypatch.setattr(webapp.cli, "_run", execute)
-        monkeypatch.setattr(webapp.cli, "_build_provider", lambda profile: SlowTitle())
         response = await webapp.start_run(webapp.StartRunRequest(goal="test"))
         await started.wait()
-        await title_started.wait()
         await webapp.rename_run(response["run_id"], webapp.RenameRunRequest(title="My title"))
-        title_task = webapp._title_tasks[response["run_id"]]
-        title_ready.set()
-        await title_task
         finish.set()
+        await finish_run(response["run_id"])
+        await webapp.start_run(webapp.StartRunRequest(goal="follow-up", run_id=response["run_id"]))
         await finish_run(response["run_id"])
         saved = store.load_run(response["run_id"])
         assert saved.title == "My title"

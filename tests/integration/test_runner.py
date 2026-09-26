@@ -7,7 +7,16 @@ import pytest
 from clearact.context.budget import ContextBudget
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import RiskLevel, RunStatus
-from clearact.domain.models import Action, LLMResponse, RiskAssessment, Run, ToolDefinition, ToolResult, UserPolicy
+from clearact.domain.models import (
+    Action,
+    ChatMessage,
+    LLMResponse,
+    RiskAssessment,
+    Run,
+    ToolDefinition,
+    ToolResult,
+    UserPolicy,
+)
 from clearact.runtime.approvals import DenyAllApprovalGate
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.executor import ToolExecutor
@@ -19,7 +28,7 @@ from clearact.runtime.stage_mapper import StageMapper
 from clearact.storage.checkpoint_store import CheckpointStore
 from clearact.storage.run_store import RunStore
 from clearact.tools.base import ToolContext
-from clearact.tools.filesystem import WriteFileTool
+from clearact.tools.filesystem import ReadFileTool, WriteFileTool
 from clearact.tools.registry import ToolRegistry
 
 
@@ -31,6 +40,16 @@ class SearchTool:
 
     async def execute(self, arguments: dict, _context: ToolContext, action_id: str) -> ToolResult:
         return ToolResult(action_id=action_id, tool_name=self.name, ok=True, content="Results for: test")
+
+
+class FetchTool:
+    name = "fetch_url"
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(name=self.name, description="fetch", parameters={"type": "object"})
+
+    async def execute(self, arguments: dict, _context: ToolContext, action_id: str) -> ToolResult:
+        return ToolResult(action_id=action_id, tool_name=self.name, ok=True, content="Source text")
 
 
 class ScriptedProvider:
@@ -54,13 +73,16 @@ class FlakyProvider:
         return outcome
 
 
-def build_runner(root: Path, provider: ScriptedProvider, *, max_tool_calls: int = 4) -> AgentRunner:
+def build_runner(
+    root: Path, provider: ScriptedProvider, *, max_tool_calls: int = 4, context_window: int = 4096
+) -> AgentRunner:
     registry = ToolRegistry()
+    registry.register(ReadFileTool())
     registry.register(WriteFileTool())
     return AgentRunner(
         provider=provider,
         registry=registry,
-        context_builder=ContextBuilder(ContextBudget(4096, 0.7)),
+        context_builder=ContextBuilder(ContextBudget(context_window, 0.7)),
         risk_evaluator=RiskEvaluator(root, {}),
         policy_engine=PolicyEngine(),
         approval_gate=DenyAllApprovalGate(),
@@ -92,6 +114,95 @@ def test_runner_preserves_assistant_tool_call_and_completes(workspace):
     assert (workspace / "answer.txt").read_text(encoding="utf-8") == "done"
     assert run.messages[0].tool_calls == [action]
     assert run.messages[1].tool_call_id == "call_123"
+
+
+def test_repeated_reads_respect_ranges_and_file_changes(workspace):
+    (workspace / "notes.txt").write_text("abcdef", encoding="utf-8")
+    actions = [
+        Action(id="first", tool_name="read_file", arguments={"path": "notes.txt", "max_chars": 2}),
+        Action(id="repeat", tool_name="read_file", arguments={"path": "notes.txt", "max_chars": 2}),
+        Action(id="next", tool_name="read_file", arguments={"path": "notes.txt", "offset": 2, "max_chars": 2}),
+        Action(id="write", tool_name="write_file", arguments={"path": "notes.txt", "content": "UVWXYZ"}),
+        Action(id="reread", tool_name="read_file", arguments={"path": "notes.txt", "max_chars": 2}),
+    ]
+
+    async def execute():
+        runner = build_runner(
+            workspace,
+            ScriptedProvider([LLMResponse(tool_calls=actions), LLMResponse(content="done")]),
+            max_tool_calls=5,
+            context_window=8192,
+        )
+        run = Run(
+            goal="update notes",
+            policy=UserPolicy(autonomy_threshold=RiskLevel.RED),
+            messages=[ChatMessage(role="user", content="update notes")],
+        )
+        return run, await runner.run(run)
+
+    run, final = asyncio.run(execute())
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert final == "done"
+    assert results["first"].metadata["status"] == "succeeded"
+    assert results["repeat"].metadata["status"] == "skipped"
+    assert results["next"].content.startswith("cd")
+    assert results["reread"].content.startswith("UV")
+
+
+def test_truncated_model_answer_is_continued_before_completion(workspace):
+    runner = build_runner(
+        workspace,
+        ScriptedProvider(
+            [
+                LLMResponse(content="第一部分，", finish_reason="length"),
+                LLMResponse(content="第二部分。", finish_reason="stop"),
+            ]
+        ),
+    )
+    run = Run(goal="summarize")
+    final = asyncio.run(runner.run(run))
+    assert final == "第一部分，第二部分。"
+    assert run.status is RunStatus.COMPLETED
+    assert run.messages[-1].content == final
+
+
+def test_attachment_research_can_open_a_search_result(workspace):
+    registry = ToolRegistry()
+    registry.register(SearchTool())
+    registry.register(FetchTool())
+    search = Action(id="search", tool_name="web_search", arguments={"query": "official rules"})
+    fetch = Action(id="fetch", tool_name="fetch_url", arguments={"url": "https://example.test/rules"})
+    runner = AgentRunner(
+        provider=ScriptedProvider([LLMResponse(tool_calls=[search, fetch]), LLMResponse(content="done")]),
+        registry=registry,
+        context_builder=ContextBuilder(ContextBudget(8192, 0.7)),
+        risk_evaluator=RiskEvaluator(workspace, {}),
+        policy_engine=PolicyEngine(),
+        approval_gate=DenyAllApprovalGate(),
+        executor=ToolExecutor(registry, 1),
+        event_bus=EventBus(),
+        run_store=RunStore(workspace / "data"),
+        checkpoint_store=CheckpointStore(workspace / "data"),
+        tool_context=ToolContext(workspace),
+        stage_mapper=StageMapper({}),
+        max_iterations=3,
+        max_tool_calls=2,
+    )
+    run = Run(
+        goal="Use the attached rules",
+        policy=UserPolicy(autonomy_threshold=RiskLevel.RED),
+        messages=[
+            ChatMessage(
+                role="user",
+                content="Use the attached rules",
+                metadata={"attachments": [{"name": "rules.pdf", "path": "rules.pdf"}]},
+            )
+        ],
+    )
+    asyncio.run(runner.run(run))
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert results["search"].metadata["status"] == "succeeded"
+    assert results["fetch"].metadata["status"] == "succeeded"
 
 
 def test_runner_retries_transient_model_disconnect_and_keeps_run_active(workspace):

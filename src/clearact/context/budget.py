@@ -1,6 +1,7 @@
 import json
 
 from clearact.domain.models import ChatMessage, ToolDefinition
+from clearact.providers.attachments import attachment_prompt
 
 
 class ContextBudgetError(ValueError):
@@ -21,12 +22,16 @@ class ContextBudget:
 
     def estimate(self, messages: list[ChatMessage], tools: list[ToolDefinition]) -> int:
         # Providers use different tokenizers. UTF-8 bytes give a deliberately
-        # conservative estimate, including CJK, reasoning, tool arguments and
-        # result metadata. Count the larger OpenAI-compatible tool-call shape,
+        # conservative estimate, including CJK, reasoning and tool arguments.
+        # Runtime metadata is not sent to the model; attached file references
+        # are converted to user-visible prompt text before provider submission.
+        # Count the larger OpenAI-compatible tool-call shape,
         # including JSON-string escaping of arguments, rather than content alone.
         payload_messages = []
         for message in messages:
-            payload = message.model_dump(mode="json", exclude={"tool_calls"}, exclude_none=True)
+            payload = message.model_dump(mode="json", exclude={"tool_calls", "metadata"}, exclude_none=True)
+            if message.role == "user" and message.metadata.get("attachments"):
+                payload["content"] = attachment_prompt(message)
             if message.tool_calls:
                 payload["tool_calls"] = [
                     {

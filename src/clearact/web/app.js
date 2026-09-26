@@ -7,6 +7,10 @@ let lastRunSignature = null;
 let selectedWorkdir = null;
 let editingMcpName = null;
 let pendingFiles = [];
+let viewEpoch = 0;
+let sending = false;
+let gatewayConnected = true;
+const runEtags = new Map();
 const openStepDetails = new Set();
 let appearance = localStorage.getItem("clearact-appearance") || "sun";
 
@@ -35,13 +39,39 @@ const text = {
 const t = (key) => text[language]?.[key] || key;
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
 function safeHttpUrl(value) { try { const url = new URL(String(value)); return ["http:", "https:"].includes(url.protocol) ? url.href : ""; } catch { return ""; } }
-async function json(url, options) { const response = await fetch(url, options); const body = response.status === 204 ? null : await response.json(); if (!response.ok) throw new Error(body?.detail || "Request failed"); return body; }
-function applyLanguage() { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; document.querySelectorAll("[data-i18n]").forEach((node) => node.textContent = t(node.dataset.i18n)); document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.placeholder = t(node.dataset.i18nPlaceholder)); document.querySelectorAll("[data-i18n-title]").forEach((node) => node.title = t(node.dataset.i18nTitle)); renderAppearance(); }
+function setGatewayConnected(connected) {
+  gatewayConnected = connected;
+  $(".live-status").classList.toggle("offline", !connected);
+  $(".live-status > span").textContent = connected ? t("connected") : (language === "zh" ? "本地网关已断开" : "Local gateway disconnected");
+}
+async function fetchGateway(url, options) {
+  try {
+    const response = await fetch(url, options);
+    setGatewayConnected(true);
+    return response;
+  } catch (error) {
+    setGatewayConnected(false);
+    const hint = language === "zh" ? "无法连接本地网关。请重新启动 ClearAct 并刷新页面。" : "Cannot reach the local gateway. Restart ClearAct and refresh this page.";
+    throw new Error(`${hint} (${error.message})`, {cause:error});
+  }
+}
+async function json(url, options) { const response = await fetchGateway(url, options); const body = response.status === 204 ? null : await response.json(); if (!response.ok) throw new Error(body?.detail || "Request failed"); return body; }
+async function requestRunDetail(id, conditional = false) {
+  const headers = {};
+  if (conditional && runEtags.has(id)) headers["If-None-Match"] = runEtags.get(id);
+  const response = await fetchGateway(`/api/runs/${encodeURIComponent(id)}`, {headers, cache:"no-store"});
+  if (response.status === 304) return {unchanged:true};
+  const body = await response.json();
+  if (!response.ok) throw new Error(body?.detail || "Request failed");
+  return {detail:body, etag:response.headers.get("ETag")};
+}
+function rememberRunEtag(id, etag) { if (etag) runEtags.set(id, etag); else runEtags.delete(id); }
+function applyLanguage() { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; document.querySelectorAll("[data-i18n]").forEach((node) => node.textContent = t(node.dataset.i18n)); document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.placeholder = t(node.dataset.i18nPlaceholder)); document.querySelectorAll("[data-i18n-title]").forEach((node) => node.title = t(node.dataset.i18nTitle)); setGatewayConnected(gatewayConnected); renderAppearance(); }
 function setWorkspace(path) { const effective = path || config?.default_workdir || ""; selectedWorkdir = effective || null; $("#workspace-path").textContent = effective; $("#workspace-indicator").title = effective ? `${t("workspace")}: ${effective}` : t("workspace"); }
 function readableSize(bytes) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1048576).toFixed(1)} MB`; }
 function renderPendingFiles() { const root = $("#attachment-list"); root.replaceChildren(); pendingFiles.forEach((file,index) => { const chip = document.createElement("span"); chip.className = "attachment-chip"; const label = document.createElement("span"); label.textContent = `${file.type.startsWith("image/") ? "🖼" : "📄"} ${file.name} · ${readableSize(file.size)}`; const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "×"; remove.onclick = () => { pendingFiles.splice(index,1); renderPendingFiles(); }; chip.append(label,remove); root.appendChild(chip); }); root.classList.toggle("hidden", !pendingFiles.length); }
 function readBase64(file) { return new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",",2)[1] || ""); reader.onerror = () => reject(reader.error || new Error("Could not read attachment")); reader.readAsDataURL(file); }); }
-async function uploadPendingFiles() { if (!pendingFiles.length) return []; $("#feedback").textContent = t("uploading"); const files = await Promise.all(pendingFiles.map(async (file) => ({name:file.name,media_type:file.type || "application/octet-stream",data_base64:await readBase64(file)}))); const result = await json("/api/uploads", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workdir:selectedWorkdir,files})}); return result.attachments || []; }
+async function uploadPendingFiles(selectedFiles, workdir) { if (!selectedFiles.length) return []; $("#feedback").textContent = t("uploading"); const files = await Promise.all(selectedFiles.map(async (file) => ({name:file.name,media_type:file.type || "application/octet-stream",data_base64:await readBase64(file)}))); const result = await json("/api/uploads", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workdir,files})}); return result.attachments || []; }
 function profileOptions(selected) { return config.profiles.map((profile) => `<option value="${escape(profile)}" ${profile === selected ? "selected" : ""}>${escape(profile)}</option>`).join(""); }
 async function loadConfig() { config = await json("/api/config"); language = config.interface_language || "zh"; applyLanguage(); setWorkspace(config.default_workdir); }
 
@@ -96,7 +126,13 @@ function attachmentsHtml(message) { const attachments = message?.metadata?.attac
 function connectionHtml(detail) { const event = [...(detail.events || [])].reverse().find((item) => ["model.retrying","model.recovered"].includes(item.type)); if (event?.type !== "model.retrying" || !["created","running"].includes(detail.run.status)) return ""; const attempt = event.data?.attempt || 2, total = event.data?.max_attempts || 3; return `<div class="connection-banner"><i></i><div><b>${escape(event.title)}</b><small>${escape(event.detail || "")} · ${language === "zh" ? `第 ${attempt}/${total} 次尝试` : `attempt ${attempt}/${total}`}</small></div></div>`; }
 function deliverCard(detail) { const final = [...detail.run.messages].reverse().find((message) => message.role === "assistant" && !message.tool_calls?.length); if (!final && ["created","running","waiting_approval","paused"].includes(detail.run.status)) return ""; return `<article class="message stage-message result-card"><div class="stage-rail"><span class="stage-index">✓</span></div><section class="stage-card"><div class="stage-title"><h3>${language === "zh" ? "结果" : "Result"}</h3></div><div class="stage-direct">${final ? markdown(final.content) : `<p class="muted">${language === "zh" ? "任务没有生成最终答复。" : "No final response."}</p>`}</div>${final ? '<span class="copy-response-slot"></span>' : ""}</section></article>`; }
 
-async function restartAtStage(stepId, feedback) { const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:feedback, run_id:activeId, rewind_step_id:stepId, interface_language:language})}); lastRunSignature = null; await showRun(result.run_id); }
+async function restartAtStage(stepId, feedback) {
+  const id = activeId, epoch = viewEpoch;
+  const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:feedback, run_id:id, rewind_step_id:stepId, interface_language:language})});
+  if (activeId !== id || viewEpoch !== epoch) return;
+  lastRunSignature = null;
+  await showRun(result.run_id);
+}
 function renderRun(detail, {force = false} = {}) {
   const signature = JSON.stringify([detail.run.updated_at, detail.run.status, detail.run.messages.length, detail.events.length, detail.approval?.action_id, detail.run.workflow_steps, detail.run.workflow_plan]);
   $("#topic-title").textContent = detail.run.title || detail.run.goal.slice(0,48);
@@ -114,9 +150,26 @@ function renderRun(detail, {force = false} = {}) {
 }
 
 function syncApproval(detail) { const dialog = $("#approval-dialog"), approval = detail.approval; if (!approval) { if (dialog.open) dialog.close(); return; } dialog.dataset.runId = detail.run.id; dialog.dataset.actionId = approval.action_id; $("#approval-summary").textContent = `${approval.tool_name} · ${approval.risk}\n${(approval.reasons || []).join("\n")}`; $("#approval-arguments").textContent = JSON.stringify(approval.arguments || {}, null, 2); if (!dialog.open) dialog.showModal(); }
-async function submitApproval(approved) { const dialog = $("#approval-dialog"); await json(`/api/runs/${dialog.dataset.runId}/approval`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action_id:dialog.dataset.actionId, approved})}); dialog.close(); await showRun(dialog.dataset.runId); }
-async function showRun(id, {force = true} = {}) { activeId = id; const detail = await json(`/api/runs/${id}`); setWorkspace(detail.run.execution?.workdir); renderRun(detail, {force}); await loadRuns(); }
-function newTopic() { activeId = null; lastRunSignature = null; pendingFiles = []; renderPendingFiles(); setWorkspace(config?.default_workdir); $("#stop-run").classList.add("hidden"); $("#topic-title").textContent = t("newTopic"); $("#conversation").classList.add("hidden"); $("#empty-state").classList.remove("hidden"); $("#goal").focus(); loadRuns(); }
+async function submitApproval(approved) {
+  const dialog = $("#approval-dialog"), id = dialog.dataset.runId, actionId = dialog.dataset.actionId, epoch = viewEpoch;
+  await json(`/api/runs/${id}/approval`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action_id:actionId, approved})});
+  if (activeId !== id || viewEpoch !== epoch) return;
+  dialog.close();
+  await showRun(id);
+}
+async function showRun(id, {force = true} = {}) {
+  if (activeId !== id && $("#approval-dialog").open) $("#approval-dialog").close();
+  activeId = id;
+  const epoch = ++viewEpoch;
+  const result = await requestRunDetail(id);
+  if (activeId !== id || viewEpoch !== epoch) return;
+  rememberRunEtag(id, result.etag);
+  const detail = result.detail;
+  setWorkspace(detail.run.execution?.workdir);
+  renderRun(detail, {force});
+  await loadRuns();
+}
+function newTopic() { activeId = null; viewEpoch++; if ($("#approval-dialog").open) $("#approval-dialog").close(); lastRunSignature = null; pendingFiles = []; renderPendingFiles(); setWorkspace(config?.default_workdir); $("#stop-run").classList.add("hidden"); $("#topic-title").textContent = t("newTopic"); $("#conversation").classList.add("hidden"); $("#empty-state").classList.remove("hidden"); $("#goal").focus(); loadRuns(); }
 
 let topicAction = null;
 function openTopicMenu(id,title) { topicAction = {id, mode:"rename"}; $("#topic-dialog-title").textContent = `${t("rename")} / ${t("delete")}`; $("#topic-input").value = title; $("#topic-input").classList.remove("hidden"); $("#topic-delete-warning").classList.add("hidden"); $("#topic-delete").classList.remove("hidden"); $("#topic-delete").onclick = () => { topicAction.mode = "delete"; $("#topic-delete-warning").classList.remove("hidden"); $("#topic-input").classList.add("hidden"); $("#topic-delete").classList.add("hidden"); }; $("#topic-dialog").showModal(); }
@@ -145,13 +198,107 @@ async function saveMcp() { const body = {name:editingMcpName || $("#mcp-name").v
 async function openSettings() { settings = await json("/api/settings"); $("#interface-language").value = settings.interface_language || "zh"; $("#default-autonomy").value = settings.default_autonomy || "yellow"; $("#default-iterations").value = settings.max_iterations; $("#default-tool-calls").value = settings.max_tool_calls; $("#default-profile").innerHTML = profileOptions(settings.default_profile); renderCapabilityRules({...presets.balanced,...settings.capability_rules}); renderProfileSettings(); renderMcpServers(); $("#settings-dialog").showModal(); }
 
 $("#grant-approval").onclick = () => submitApproval(true); $("#deny-approval").onclick = () => submitApproval(false);
-$("#stop-run").onclick = async () => { if (activeId) { await json(`/api/runs/${activeId}/stop`, {method:"POST"}); await showRun(activeId); } };
+$("#stop-run").onclick = async () => { const id = activeId, epoch = viewEpoch; if (id) { await json(`/api/runs/${id}/stop`, {method:"POST"}); if (activeId === id && viewEpoch === epoch) await showRun(id); } };
 $("#guide-trigger").onclick = () => $("#guide-dialog").showModal(); $("#welcome-guide").onclick = () => $("#guide-dialog").showModal();
-async function chooseWorkdir() { try { const result = await json("/api/select-directory", {method:"POST"}); if (result.path) { setWorkspace(result.path); $("#feedback").textContent = t("workspaceChanged"); $("#goal").focus(); } } catch (error) { $("#feedback").textContent = error.message; } }
+function chooseWorkdir() {
+  $("#workspace-input").value = selectedWorkdir || "";
+  $("#workspace-feedback").textContent = "";
+  $("#workspace-browser").classList.add("hidden");
+  $("#browse-workspace").setAttribute("aria-expanded", "false");
+  $("#workspace-dialog").showModal();
+  $("#workspace-input").focus();
+}
+let browsePath = null;
+let browseParent = null;
+let browseRequest = 0;
+let browseSearchTimer = null;
+async function loadWorkspaceFolders(path, query = "") {
+  const request = ++browseRequest;
+  const list = $("#workspace-browser-list");
+  list.textContent = language === "zh" ? "正在读取文件夹…" : "Loading folders…";
+  $("#workspace-browser-hint").textContent = "";
+  try {
+    const params = new URLSearchParams();
+    if (path) params.set("path", path);
+    if (query) params.set("query", query);
+    const result = await json(`/api/workspaces/browse?${params}`);
+    if (request !== browseRequest || !$("#workspace-dialog").open) return;
+    browsePath = result.path;
+    browseParent = result.parent;
+    $("#workspace-parent").disabled = !browseParent;
+    $("#workspace-browser-path").textContent = result.path || (language === "zh" ? "此电脑" : "This computer");
+    $("#workspace-browser-search").disabled = !result.path;
+    list.replaceChildren();
+    for (const folder of result.directories) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "workspace-folder";
+      button.textContent = `📁 ${folder.name}`;
+      button.title = folder.path;
+      button.onclick = () => { $("#workspace-input").value = folder.path; navigateWorkspace(folder.path); };
+      list.appendChild(button);
+    }
+    if (!result.directories.length) list.textContent = language === "zh" ? "没有子文件夹，可直接使用当前文件夹。" : "No subfolders. You can use this folder.";
+    if (result.truncated) $("#workspace-browser-hint").textContent = language === "zh" ? "子文件夹较多，请用上方搜索框查找。" : "Many folders; use search above.";
+    $("#workspace-feedback").textContent = "";
+  } catch (error) {
+    if (request !== browseRequest) return;
+    list.textContent = "";
+    $("#workspace-feedback").textContent = error.message;
+  }
+}
+function navigateWorkspace(path) {
+  clearTimeout(browseSearchTimer);
+  $("#workspace-browser-search").value = "";
+  loadWorkspaceFolders(path);
+}
+$("#browse-workspace").onclick = () => {
+  const browser = $("#workspace-browser");
+  const opening = browser.classList.contains("hidden");
+  browser.classList.toggle("hidden", !opening);
+  $("#browse-workspace").setAttribute("aria-expanded", String(opening));
+  if (opening) navigateWorkspace($("#workspace-input").value.trim() || null);
+  else browseRequest++;
+};
+$("#workspace-roots").onclick = () => navigateWorkspace(null);
+$("#workspace-parent").onclick = () => { if (browseParent) { $("#workspace-input").value = browseParent; navigateWorkspace(browseParent); } };
+$("#workspace-browser-search").oninput = () => {
+  clearTimeout(browseSearchTimer);
+  const query = $("#workspace-browser-search").value.trim();
+  browseSearchTimer = setTimeout(() => loadWorkspaceFolders(browsePath, query), 180);
+};
+$("#workspace-dialog").addEventListener("close", () => { browseRequest++; clearTimeout(browseSearchTimer); });
+$("#workspace-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    const result = await json("/api/workspaces/validate", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:$("#workspace-input").value.trim()})});
+    setWorkspace(result.path);
+    $("#workspace-dialog").close();
+    $("#feedback").textContent = t("workspaceChanged");
+    $("#goal").focus();
+  } catch (error) { $("#workspace-feedback").textContent = error.message; }
+};
 $("#choose-workdir").onclick = chooseWorkdir;
 $("#workspace-indicator").onclick = chooseWorkdir;
 $("#theme-toggle").onclick = toggleAppearance;
 renderAppearance();
+const feedbackNode = $("#feedback");
+new MutationObserver(() => $("#copy-feedback").classList.toggle("hidden", !feedbackNode.textContent.trim())).observe(feedbackNode, {childList:true, characterData:true, subtree:true});
+$("#copy-feedback").onclick = async () => {
+  const button = $("#copy-feedback");
+  try {
+    await navigator.clipboard.writeText(feedbackNode.textContent);
+    button.textContent = language === "zh" ? "已复制" : "Copied";
+  } catch {
+    const selection = window.getSelection(), range = document.createRange();
+    range.selectNodeContents(feedbackNode);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    button.textContent = document.execCommand("copy")
+      ? (language === "zh" ? "已复制" : "Copied")
+      : (language === "zh" ? "已选中，请按 Ctrl+C" : "Selected; press Ctrl+C");
+  }
+};
 $("#attach-files").onclick = () => $("#file-input").click();
 $("#file-input").onchange = () => { const input = $("#file-input"), additions = [...input.files]; input.value = ""; const combined = [...pendingFiles,...additions]; if (combined.length > 8) { $("#feedback").textContent = language === "zh" ? "一次最多上传 8 个附件" : "Up to 8 attachments per message"; return; } if (combined.some((file) => file.size > 12 * 1024 * 1024) || combined.reduce((sum,file) => sum + file.size,0) > 32 * 1024 * 1024) { $("#feedback").textContent = language === "zh" ? "单个附件不能超过 12 MB，总计不能超过 32 MB" : "Each attachment must be under 12 MB and the total under 32 MB"; return; } pendingFiles = combined; $("#feedback").textContent = ""; renderPendingFiles(); };
 $("#open-mcp-quick").onclick = async () => { await openSettings(); openMcpEditor(); $("#mcp-settings").scrollIntoView({behavior:"smooth"}); };
@@ -161,8 +308,8 @@ document.querySelectorAll("[data-preset]").forEach((button) => button.onclick = 
 document.querySelectorAll("[data-close]").forEach((button) => button.onclick = () => $("#" + button.dataset.close).close());
 document.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); newTopic(); } });
 $("#goal").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("#run-form").requestSubmit(); } });
-$("#topic-form").onsubmit = async (event) => { event.preventDefault(); if (topicAction.mode === "delete") await json(`/api/runs/${topicAction.id}`, {method:"DELETE"}); else await json(`/api/runs/${topicAction.id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({title:$("#topic-input").value.trim()})}); $("#topic-dialog").close(); activeId === topicAction.id ? await showRun(activeId) : await loadRuns(); };
-$("#run-form").onsubmit = async (event) => { event.preventDefault(); const goal = $("#goal").value.trim() || (pendingFiles.length ? t("attachmentGoal") : ""); if (!goal) return; const send = $(".send-button"); send.disabled = true; try { const attachments = await uploadPendingFiles(); const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal,run_id:activeId,interface_language:language,workdir:selectedWorkdir,attachments})}); activeId = result.run_id; $("#goal").value = ""; pendingFiles = []; renderPendingFiles(); $("#feedback").textContent = ""; await showRun(activeId); } catch (error) { $("#feedback").textContent = error.message; } finally { send.disabled = false; } };
+$("#topic-form").onsubmit = async (event) => { event.preventDefault(); const action = topicAction; if (action.mode === "delete") { await json(`/api/runs/${action.id}`, {method:"DELETE"}); runEtags.delete(action.id); $("#topic-dialog").close(); if (activeId === action.id) newTopic(); else await loadRuns(); return; } await json(`/api/runs/${action.id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({title:$("#topic-input").value.trim()})}); $("#topic-dialog").close(); activeId === action.id ? await showRun(action.id) : await loadRuns(); };
+$("#run-form").onsubmit = async (event) => { event.preventDefault(); if (sending) return; const input = $("#goal"); const draft = input.value; const submission = {goal:draft.trim() || (pendingFiles.length ? t("attachmentGoal") : ""), files:[...pendingFiles], workdir:selectedWorkdir, runId:activeId, language}; if (!submission.goal) return; const epoch = viewEpoch; const send = $(".send-button"); sending = true; send.disabled = true; try { const attachments = await uploadPendingFiles(submission.files, submission.workdir); const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:submission.goal,run_id:submission.runId,interface_language:submission.language,workdir:submission.workdir,attachments})}); if (viewEpoch !== epoch || activeId !== submission.runId) return; if (input.value === draft) input.value = ""; pendingFiles = pendingFiles.filter((file) => !submission.files.includes(file)); renderPendingFiles(); $("#feedback").textContent = ""; await showRun(result.run_id); } catch (error) { if (viewEpoch === epoch && activeId === submission.runId) $("#feedback").textContent = error.message; } finally { sending = false; send.disabled = false; } };
 $("#settings-form").onsubmit = async (event) => { event.preventDefault(); const profiles = {}; document.querySelectorAll(".profile-card").forEach((card) => { const profile = {}; card.querySelectorAll("[data-key]").forEach((input) => { if (input.dataset.key === "apiKey" && !input.value.trim()) return; profile[input.dataset.key] = input.type === "number" ? Number(input.value) : input.value.trim(); }); profiles[card.dataset.profile] = profile; }); try { await json("/api/settings", {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({interface_language:$("#interface-language").value,default_autonomy:$("#default-autonomy").value,max_iterations:Number($("#default-iterations").value),max_tool_calls:Number($("#default-tool-calls").value),default_profile:$("#default-profile").value,profiles,capability_rules:currentCapabilityRules()})}); $("#settings-feedback").textContent = language === "zh" ? "已保存" : "Saved"; } catch (error) { $("#settings-feedback").textContent = error.message; } };
 $("#mcp-import-button").onclick = async () => { try { const result = await json("/api/mcp/import", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({config:JSON.parse($("#mcp-import").value)})}); $("#mcp-feedback").textContent = `已导入：${result.imported.join(", ")}`; $("#mcp-import").value = ""; await refreshSettings(); } catch (error) { $("#mcp-feedback").textContent = error.message; } };
 
@@ -172,8 +319,9 @@ let pollBusy = false;
   await loadRuns();
   setInterval(async () => {
     if (!activeId || pollBusy) return;
+    const id = activeId, epoch = viewEpoch;
     pollBusy = true;
-    try { renderRun(await json(`/api/runs/${activeId}`)); } finally { pollBusy = false; }
+    try { const result = await requestRunDetail(id, true); if (activeId === id && viewEpoch === epoch && !result.unchanged) { rememberRunEtag(id, result.etag); renderRun(result.detail); } } catch (error) { if (activeId === id && viewEpoch === epoch) $("#feedback").textContent = error.message; } finally { pollBusy = false; }
   }, 1000);
   setInterval(() => loadRuns().catch(() => {}), 8000);
 })().catch((error) => $("#feedback").textContent = error.message);

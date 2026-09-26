@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from clearact.context.budget import ContextBudget
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import RiskLevel, RunStatus
@@ -8,6 +10,7 @@ from clearact.domain.models import Action, LLMResponse, Run, ToolDefinition, Too
 from clearact.runtime.approvals import DenyAllApprovalGate
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.executor import ToolExecutor
+from clearact.runtime.model_retry import ModelRequestError
 from clearact.runtime.policy import PolicyEngine
 from clearact.runtime.risk import RiskEvaluator
 from clearact.runtime.runner import AgentRunner
@@ -105,3 +108,25 @@ def test_plan_is_required_then_phase_is_revealed_when_work_begins(workspace):
     assert run.workflow_steps[-1].action_ids == ["search_call"]
     assert all(step.status == "completed" for step in run.workflow_steps)
 
+
+def test_model_without_tool_calls_cannot_mark_unplanned_task_complete(workspace):
+    provider = ScriptedProvider([LLMResponse(content="I will work on it.")])
+    run = Run(goal="create a report")
+
+    with pytest.raises(ModelRequestError, match="支持工具调用"):
+        asyncio.run(build_runner(workspace, provider).run(run))
+
+    assert run.status is RunStatus.FAILED
+
+
+def test_simple_greeting_can_reply_without_forcing_a_tool_call(workspace):
+    provider = ScriptedProvider([LLMResponse(content="你好！有什么可以帮你？", finish_reason="stop")])
+    run = Run(goal="你好")
+
+    final = asyncio.run(build_runner(workspace, provider).run(run))
+
+    assert final == "你好！有什么可以帮你？"
+    assert run.status is RunStatus.COMPLETED
+    assert [step.title for step in run.workflow_steps] == ["直接回复"]
+    assert [item.id for item in run.workflow_plan] == ["reply"]
+    assert len(provider.offered_tools) == 1
