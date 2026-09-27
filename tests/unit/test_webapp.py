@@ -279,3 +279,86 @@ def test_rewind_rolls_back_discarded_file_writes_and_flags_external_effects(tmp_
     assert restored == [snapshot_id]
     assert target.read_text(encoding="utf-8") == "before"
     assert warnings == [f"External effect may remain: {remote.tool_name} ({remote.id})"]
+
+
+def test_file_preview_uses_recorded_before_and_after_and_rejects_outside_paths(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from clearact.domain.models import ChatMessage, Run, RunExecutionSettings
+    from clearact.storage.run_store import RunStore
+    from clearact.storage.snapshots import SnapshotStore
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "tools.yaml").write_text("tools: {}", encoding="utf-8")
+    (tmp_path / "config" / "risk_rules.yaml").write_text("{}", encoding="utf-8")
+    (tmp_path / "clearact.json").write_text(json.dumps({
+        "defaultProfile": "demo",
+        "profiles": {"demo": {"provider": "ollama", "model": "d", "baseUrl": "http://localhost", "contextWindow": 10}},
+        "agent": {"maxIterations": 2, "maxToolCallsPerRun": 3},
+        "workspace": {"defaultRoot": "workspace"},
+        "storage": {"dataRoot": "data"},
+        "network": {}, "policy": {"defaultAutonomy": "green", "defaultViewMode": "simple"}, "web": {},
+    }), encoding="utf-8")
+    monkeypatch.setattr(webapp.cli, "_project_root", lambda: tmp_path)
+    target = workspace / "note.txt"
+    target.write_text("old\n", encoding="utf-8")
+    snapshot_id = SnapshotStore(tmp_path / "data", workspace).save_before_write(target, "old\n", True)
+    target.write_text("later unrelated edit\n", encoding="utf-8")
+    action = Action(id="act_preview", tool_name="write_file", arguments={"path": "note.txt", "content": "new\n"})
+    run = Run(goal="edit", execution=RunExecutionSettings(workdir=str(workspace)), messages=[
+        webapp.ChatMessage(role="assistant", tool_calls=[action]),
+        ChatMessage(role="tool", tool_call_id=action.id, name="write_file", content="written", metadata={
+            "status": "succeeded", "path": str(target), "snapshot_id": snapshot_id,
+        }),
+    ])
+    RunStore(tmp_path / "data").save_run(run)
+
+    preview = asyncio.run(webapp.action_file_preview(run.id, action.id))
+    assert "-old" in preview["content"] and "+new" in preview["content"]
+    assert "later unrelated edit" not in preview["content"]
+    run.messages[-1].metadata["path"] = str(tmp_path / "outside.txt")
+    RunStore(tmp_path / "data").save_run(run)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(webapp.action_file_preview(run.id, action.id))
+    assert exc.value.status_code == 403
+
+
+def test_mcp_catalog_only_returns_direct_https_streamable_http(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"servers": [
+                {"server": {"name": "example/demo", "title": "Demo", "remotes": [
+                    {"type": "streamable-http", "url": "https://example.test/mcp"},
+                ]}},
+                {"server": {"name": "example/template", "remotes": [
+                    {"type": "streamable-http", "url": "https://{host}/mcp"},
+                ]}},
+                {"server": {"name": "example/local", "remotes": [
+                    {"type": "streamable-http", "url": "http://127.0.0.1/mcp"},
+                ]}},
+            ]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params):
+            assert url == "https://registry.modelcontextprotocol.io/v0.1/servers"
+            assert params["search"] == "demo"
+            return FakeResponse()
+
+    monkeypatch.setattr(webapp.httpx, "AsyncClient", FakeClient)
+    response = asyncio.run(webapp.search_mcp_catalog("demo"))
+    assert [item["title"] for item in response["servers"]] == ["Demo"]

@@ -162,6 +162,7 @@ async def _run(
     run: Run | None = None,
     interface_language: str = "zh",
     approval_gate: ApprovalGate | None = None,
+    render_console: bool = True,
 ) -> None:
     project_root = _project_root()
     _load_dotenv(project_root)
@@ -177,7 +178,8 @@ async def _run(
     console = Console()
     renderer = ConsoleRenderer(settings.default_view_mode, console)
     event_bus = EventBus()
-    event_bus.subscribe(renderer.handle)
+    if render_console:
+        event_bus.subscribe(renderer.handle)
     run_store = RunStore(settings.data_root)
     event_bus.subscribe_sync(run_store.append_event)
 
@@ -235,7 +237,8 @@ async def _run(
     )
     try:
         final = await runner.run(run)
-        renderer.print_final(final)
+        if render_console:
+            renderer.print_final(final)
     finally:
         await mcp_manager.close()
 

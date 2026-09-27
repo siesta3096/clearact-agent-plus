@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import ctypes
+import difflib
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -411,6 +413,53 @@ async def update_settings(request: SettingsRequest) -> dict:
     return {"saved": True}
 
 
+@app.get("/api/mcp/catalog")
+async def search_mcp_catalog(q: str = "") -> dict[str, Any]:
+    """Find concrete remote connections in the public, unvetted MCP Registry."""
+    query = q.strip()
+    if len(query) < 2 or len(query) > 80:
+        raise HTTPException(status_code=422, detail="Search must contain 2–80 characters.")
+    try:
+        async with asyncio.timeout(7):
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=False) as client:
+                response = await client.get(
+                    "https://registry.modelcontextprotocol.io/v0.1/servers",
+                    params={"search": query, "version": "latest", "limit": 30},
+                )
+                response.raise_for_status()
+                payload = response.json()
+    except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+        raise HTTPException(
+            status_code=502, detail="MCP Registry is unavailable. You can still add a service URL manually."
+        ) from exc
+    items = []
+    for entry in payload.get("servers", []):
+        if not isinstance(entry, dict):
+            continue
+        server = entry.get("server", entry)
+        if not isinstance(server, dict):
+            continue
+        for remote in server.get("remotes") or []:
+            if not isinstance(remote, dict):
+                continue
+            url = remote.get("url")
+            if remote.get("type") != "streamable-http" or not isinstance(url, str):
+                continue
+            if not url.startswith("https://") or "{" in url or "}" in url:
+                continue
+            items.append({
+                "name": str(server.get("name") or "")[:150],
+                "title": str(server.get("title") or server.get("name") or "")[:120],
+                "description": str(server.get("description") or "")[:250],
+                "url": url[:1000],
+                "needs_auth": bool(remote.get("headers") or remote.get("variables")),
+            })
+            break
+        if len(items) >= 12:
+            break
+    return {"source": "official_mcp_registry", "servers": items}
+
+
 @app.post("/api/mcp/import")
 async def import_mcp_servers(request: MCPImportRequest) -> dict:
     """Import standard mcpServers JSON while retaining secrets locally, never in responses."""
@@ -630,6 +679,65 @@ async def run_detail(run_id: str, request: Request, response: Response) -> Any:
     return result
 
 
+@app.get("/api/runs/{run_id}/actions/{action_id}/preview")
+async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
+    """Show only a file action recorded by this run, never an arbitrary path."""
+    settings = load_settings(cli._project_root())
+    store = RunStore(settings.data_root)
+    try:
+        run = store.load_run(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    action = next(
+        (call for message in run.messages for call in message.tool_calls if call.id == action_id), None
+    )
+    result = next(
+        (message for message in run.messages if message.role == "tool" and message.tool_call_id == action_id), None
+    )
+    if not action or action.tool_name not in {"read_file", "read_pdf", "write_file"}:
+        raise HTTPException(status_code=404, detail="File action not found")
+    if not result or result.metadata.get("status") != "succeeded":
+        raise HTTPException(status_code=409, detail="File action did not complete successfully")
+    recorded_path = result.metadata.get("path")
+    if not isinstance(recorded_path, str) or not recorded_path:
+        raise HTTPException(status_code=409, detail="File action has no recorded path")
+    workspace = Path(run.execution.workdir or settings.workspace_root).resolve()
+    target = Path(recorded_path).resolve()
+    try:
+        target.relative_to(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="File is outside this run's workspace") from exc
+    limit = 120_000
+    if action.tool_name != "write_file":
+        content = result.content or ""
+        return {
+            "kind": "content", "path": str(target), "content": content[:limit],
+            "truncated": len(content) > limit, "source": "recorded_action",
+        }
+    snapshot_id = result.metadata.get("snapshot_id")
+    if not isinstance(snapshot_id, str):
+        raise HTTPException(status_code=409, detail="No before-image was recorded")
+    snapshots = SnapshotStore(settings.data_root, workspace_root=workspace)
+    try:
+        before_path, existed, before = snapshots.load_before_write(snapshot_id)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail="Before-image is unavailable") from exc
+    if before_path != target:
+        raise HTTPException(status_code=409, detail="Snapshot path does not match the action")
+    after = action.arguments.get("content")
+    if not isinstance(after, str):
+        raise HTTPException(status_code=409, detail="Written content is unavailable")
+    diff = "".join(difflib.unified_diff(
+        before.splitlines(keepends=True) if existed else [], after.splitlines(keepends=True),
+        fromfile=f"before/{target.name}" if existed else "/dev/null",
+        tofile=f"after/{target.name}",
+    ))
+    return {
+        "kind": "diff", "path": str(target), "content": diff[:limit],
+        "truncated": len(diff) > limit, "created": not existed, "source": "recorded_action",
+    }
+
+
 @app.post("/api/runs/{run_id}/approval")
 async def decide_approval(run_id: str, request: ApprovalDecisionRequest) -> dict:
     pending = _pending_approvals.get(run_id)
@@ -839,6 +947,7 @@ async def start_run(request: StartRunRequest) -> dict:
                 run=run,
                 interface_language=execution.interface_language,
                 approval_gate=WebApprovalGate(run.id),
+                render_console=False,
             )
         except Exception as exc:
             # Provider/MCP initialization can fail before AgentRunner takes

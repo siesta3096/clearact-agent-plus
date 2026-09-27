@@ -33,6 +33,16 @@ class SnapshotStore:
         return snapshot_id
 
     def restore(self, snapshot_id: str) -> Path:
+        target, existed, content = self.load_before_write(snapshot_id)
+        if existed:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        elif target.exists():
+            target.unlink()
+        return target
+
+    def load_before_write(self, snapshot_id: str) -> tuple[Path, bool, str]:
+        """Read an audited before-image without changing the workspace."""
         if not snapshot_id.startswith("snapshot_") or any(char in snapshot_id for char in "\\/"):
             raise ValueError("Invalid snapshot ID.")
         metadata_path = self._root / f"{snapshot_id}.json"
@@ -46,9 +56,4 @@ class SnapshotStore:
                 target.relative_to(self._workspace_root)
             except ValueError as exc:
                 raise ValueError("Snapshot target is outside the authorized workspace.") from exc
-        if metadata["existed"]:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content_path.read_text(encoding="utf-8"), encoding="utf-8")
-        elif target.exists():
-            target.unlink()
-        return target
+        return target, bool(metadata["existed"]), content_path.read_text(encoding="utf-8")

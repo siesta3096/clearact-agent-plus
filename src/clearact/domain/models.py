@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -126,6 +126,15 @@ class RunExecutionSettings(BaseModel):
     interface_language: str | None = Field(default=None, pattern="^(zh|en)$")
 
 
+class ResearchStrategy(BaseModel):
+    """Public, task-specific limits for avoiding wasteful evidence gathering."""
+
+    mode: Literal["local_only", "local_first", "mixed", "research", "balanced"]
+    search_streak_limit: int = Field(ge=0)
+    total_search_limit: int | None = Field(default=None, ge=0)
+    requires_local_evidence: bool = False
+
+
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: new_id("run"))
     goal: str
@@ -133,6 +142,7 @@ class Run(BaseModel):
     status: RunStatus = RunStatus.CREATED
     policy: UserPolicy = Field(default_factory=UserPolicy)
     execution: RunExecutionSettings = Field(default_factory=RunExecutionSettings)
+    research_strategy: ResearchStrategy | None = None
     messages: list[ChatMessage] = Field(default_factory=list)
     # Public, model-generated stage summaries. These are deliberately distinct
     # from private chain-of-thought / provider reasoning traces.

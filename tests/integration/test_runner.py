@@ -39,7 +39,13 @@ class SearchTool:
         return ToolDefinition(name=self.name, description="search", parameters={"type": "object"})
 
     async def execute(self, arguments: dict, _context: ToolContext, action_id: str) -> ToolResult:
-        return ToolResult(action_id=action_id, tool_name=self.name, ok=True, content="Results for: test")
+        return ToolResult(
+            action_id=action_id,
+            tool_name=self.name,
+            ok=True,
+            content="Results for: test",
+            metadata={"query": arguments.get("query"), "count": 1},
+        )
 
 
 class FetchTool:
@@ -149,6 +155,198 @@ def test_repeated_reads_respect_ranges_and_file_changes(workspace):
     assert results["reread"].content.startswith("UV")
 
 
+def test_read_file_guard_reuses_a_range_already_covered_by_an_unchanged_read(workspace):
+    (workspace / "notes.txt").write_text("abcdefghij", encoding="utf-8")
+    actions = [
+        Action(id="first", tool_name="read_file", arguments={"path": "notes.txt", "max_chars": 6}),
+        Action(id="covered", tool_name="read_file", arguments={"path": "notes.txt", "offset": 2, "max_chars": 3}),
+        Action(id="next", tool_name="read_file", arguments={"path": "notes.txt", "offset": 6, "max_chars": 4}),
+    ]
+    runner = build_runner(workspace, ScriptedProvider([LLMResponse(tool_calls=actions), LLMResponse(content="done")]))
+    run = Run(goal="read notes", policy=UserPolicy(autonomy_threshold=RiskLevel.RED))
+
+    asyncio.run(runner.run(run))
+
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert results["covered"].metadata["status"] == "skipped"
+    assert results["covered"].metadata["reason"] == "covered_read"
+    assert results["next"].metadata["status"] == "succeeded"
+
+
+def test_search_guard_pauses_after_three_searches_until_a_source_is_opened(workspace):
+    registry = ToolRegistry()
+    registry.register(SearchTool())
+    registry.register(FetchTool())
+    actions = [
+        Action(id="s1", tool_name="web_search", arguments={"query": "first topic"}),
+        Action(id="s2", tool_name="web_search", arguments={"query": "second topic"}),
+        Action(id="s3", tool_name="web_search", arguments={"query": "third topic"}),
+        Action(id="s4", tool_name="web_search", arguments={"query": "fourth topic"}),
+        Action(id="page", tool_name="fetch_url", arguments={"url": "https://example.test/source"}),
+        Action(id="s5", tool_name="web_search", arguments={"query": "fifth topic"}),
+    ]
+    runner = AgentRunner(
+        provider=ScriptedProvider([LLMResponse(tool_calls=actions), LLMResponse(content="done")]),
+        registry=registry,
+        context_builder=ContextBuilder(ContextBudget(8192, 0.7)),
+        risk_evaluator=RiskEvaluator(workspace, {}),
+        policy_engine=PolicyEngine(),
+        approval_gate=DenyAllApprovalGate(),
+        executor=ToolExecutor(registry, 1),
+        event_bus=EventBus(),
+        run_store=RunStore(workspace / "data"),
+        checkpoint_store=CheckpointStore(workspace / "data"),
+        tool_context=ToolContext(workspace),
+        stage_mapper=StageMapper({}),
+        max_iterations=3,
+        max_tool_calls=6,
+    )
+    run = Run(goal="summarize", policy=UserPolicy(autonomy_threshold=RiskLevel.RED))
+
+    asyncio.run(runner.run(run))
+
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert results["s4"].metadata["reason"] == "search_streak"
+    assert results["page"].metadata["status"] == "succeeded"
+    assert results["s5"].metadata["status"] == "succeeded"
+
+
+def test_search_tool_is_restored_after_opening_a_source(workspace):
+    class RecordingProvider(ScriptedProvider):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.offered_tools = []
+
+        async def chat(self, messages, tools):
+            self.offered_tools.append([tool.name for tool in tools])
+            return await super().chat(messages, tools)
+
+    registry = ToolRegistry()
+    registry.register(SearchTool())
+    registry.register(FetchTool())
+    provider = RecordingProvider(
+        [
+            LLMResponse(tool_calls=[
+                Action(id=f"search_{number}", tool_name="web_search", arguments={"query": f"topic {number}"})
+                for number in range(3)
+            ]),
+            LLMResponse(tool_calls=[
+                Action(id="source", tool_name="fetch_url", arguments={"url": "https://example.test/source"})
+            ]),
+            LLMResponse(content="done"),
+        ]
+    )
+    runner = AgentRunner(
+        provider=provider,
+        registry=registry,
+        context_builder=ContextBuilder(ContextBudget(8192, 0.7)),
+        risk_evaluator=RiskEvaluator(workspace, {}),
+        policy_engine=PolicyEngine(),
+        approval_gate=DenyAllApprovalGate(),
+        executor=ToolExecutor(registry, 1),
+        event_bus=EventBus(),
+        run_store=RunStore(workspace / "data"),
+        checkpoint_store=CheckpointStore(workspace / "data"),
+        tool_context=ToolContext(workspace),
+        stage_mapper=StageMapper({}),
+        max_iterations=3,
+        max_tool_calls=4,
+    )
+
+    asyncio.run(runner.run(Run(goal="summarize", policy=UserPolicy(autonomy_threshold=RiskLevel.RED))))
+
+    assert "web_search" in provider.offered_tools[0]
+    assert "web_search" not in provider.offered_tools[1]
+    assert "fetch_url" in provider.offered_tools[1]
+    assert "web_search" in provider.offered_tools[2]
+
+
+def test_near_identical_search_is_reused_but_changed_year_is_not(workspace):
+    registry = ToolRegistry()
+    registry.register(SearchTool())
+    actions = [
+        Action(id="first", tool_name="web_search", arguments={"query": "competition application guidelines for 2025"}),
+        Action(id="similar", tool_name="web_search", arguments={"query": "competition application guideline for 2025"}),
+        Action(
+            id="new_year",
+            tool_name="web_search",
+            arguments={"query": "competition application guidelines for 2026"},
+        ),
+    ]
+    runner = AgentRunner(
+        provider=ScriptedProvider([LLMResponse(tool_calls=actions), LLMResponse(content="done")]),
+        registry=registry,
+        context_builder=ContextBuilder(ContextBudget(8192, 0.7)),
+        risk_evaluator=RiskEvaluator(workspace, {}),
+        policy_engine=PolicyEngine(),
+        approval_gate=DenyAllApprovalGate(),
+        executor=ToolExecutor(registry, 1),
+        event_bus=EventBus(),
+        run_store=RunStore(workspace / "data"),
+        checkpoint_store=CheckpointStore(workspace / "data"),
+        tool_context=ToolContext(workspace),
+        stage_mapper=StageMapper({}),
+        max_iterations=3,
+        max_tool_calls=3,
+    )
+    run = Run(goal="research", policy=UserPolicy(autonomy_threshold=RiskLevel.RED))
+
+    asyncio.run(runner.run(run))
+
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert results["similar"].metadata["reason"] == "similar_search"
+    assert results["new_year"].metadata["status"] == "succeeded"
+
+
+def test_local_attachment_is_read_before_web_and_has_small_search_budget(workspace):
+    (workspace / "rules.txt").write_text("Local rules", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool())
+    registry.register(SearchTool())
+    actions = [
+        Action(id="premature", tool_name="web_search", arguments={"query": "external ideas"}),
+        Action(id="read", tool_name="read_file", arguments={"path": "rules.txt"}),
+        Action(id="first", tool_name="web_search", arguments={"query": "idea one"}),
+        Action(id="second", tool_name="web_search", arguments={"query": "idea two"}),
+        Action(id="excess", tool_name="web_search", arguments={"query": "idea three"}),
+    ]
+    runner = AgentRunner(
+        provider=ScriptedProvider([LLMResponse(tool_calls=actions), LLMResponse(content="done")]),
+        registry=registry,
+        context_builder=ContextBuilder(ContextBudget(8192, 0.7)),
+        risk_evaluator=RiskEvaluator(workspace, {}),
+        policy_engine=PolicyEngine(),
+        approval_gate=DenyAllApprovalGate(),
+        executor=ToolExecutor(registry, 1),
+        event_bus=EventBus(),
+        run_store=RunStore(workspace / "data"),
+        checkpoint_store=CheckpointStore(workspace / "data"),
+        tool_context=ToolContext(workspace),
+        stage_mapper=StageMapper({}),
+        max_iterations=3,
+        max_tool_calls=5,
+    )
+    run = Run(
+        goal="根据附件整理材料",
+        policy=UserPolicy(autonomy_threshold=RiskLevel.RED),
+        messages=[ChatMessage(
+            role="user",
+            content="根据附件整理材料",
+            metadata={"attachments": [{"kind": "file", "path": "rules.txt"}]},
+        )],
+    )
+
+    asyncio.run(runner.run(run))
+
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    assert run.research_strategy.mode == "local_first"
+    assert results["premature"].metadata["reason"] == "local_first"
+    assert results["read"].metadata["status"] == "succeeded"
+    assert results["first"].metadata["status"] == "succeeded"
+    assert results["second"].metadata["status"] == "succeeded"
+    assert results["excess"].metadata["reason"] == "search_budget"
+
+
 def test_truncated_model_answer_is_continued_before_completion(workspace):
     runner = build_runner(
         workspace,
@@ -189,12 +387,12 @@ def test_attachment_research_can_open_a_search_result(workspace):
         max_tool_calls=2,
     )
     run = Run(
-        goal="Use the attached rules",
+        goal="Use the attached rules and research the latest official details",
         policy=UserPolicy(autonomy_threshold=RiskLevel.RED),
         messages=[
             ChatMessage(
                 role="user",
-                content="Use the attached rules",
+                content="Use the attached rules and research the latest official details",
                 metadata={"attachments": [{"name": "rules.pdf", "path": "rules.pdf"}]},
             )
         ],

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
@@ -34,6 +35,7 @@ from clearact.runtime.model_retry import (
     is_transient_model_error,
 )
 from clearact.runtime.policy import PolicyEngine
+from clearact.runtime.research_strategy import classify_research_strategy
 from clearact.runtime.risk import RiskEvaluator
 from clearact.runtime.stage_mapper import StageMapper
 from clearact.runtime.state import transition
@@ -121,6 +123,7 @@ class AgentRunner:
 
     async def _run_loop(self, run: Run) -> str:
         transition(run, RunStatus.RUNNING)
+        run.research_strategy = classify_research_strategy(run)
         self._run_store.save_run(run)
         await self._event_bus.publish(run_started(run))
         if not run.workflow_steps:
@@ -142,6 +145,8 @@ class AgentRunner:
             definitions = self._registry.definitions()
             if not run.workflow_plan and "declare_workflow_plan" in self._registry.names():
                 definitions = [tool for tool in definitions if tool.name == "declare_workflow_plan"]
+            else:
+                definitions = [tool for tool in definitions if self._web_tool_offered(run, tool.name)]
             messages, tools = self._context_builder.build(run.messages, definitions, recent_tool_names)
             response = await self._chat_with_retries(run, messages, tools)
             response = await self._finish_truncated_response(run, messages, response)
@@ -179,9 +184,8 @@ class AgentRunner:
                 await self._event_bus.publish(run_completed(run))
                 return final
 
-            # Persist and execute precisely the tool plan accepted from the model.
-            # A hidden per-turn search cap made the UI show planned searches that
-            # never ran and breaks parity with nanobot's default tool semantics.
+            # Persist every model-proposed action. Guarded actions still receive
+            # a visible tool result, so the UI and model ledger stay in sync.
             accepted_actions = list(response.tool_calls)
             assistant_message_index = len(run.messages)
             run.messages.append(
@@ -233,15 +237,16 @@ class AgentRunner:
                         raise RuntimeError(f"Agent reached the maximum tool-call limit ({self._max_tool_calls}).")
                     self._attach_action_to_step(run, action, assistant_message_index)
                     assessment = self._risk_evaluator.assess(action)
-                    guard_reason = self._guard_read_only_action(run, action)
-                    if guard_reason:
+                    guard = self._guard_read_only_action(run, action)
+                    if guard:
+                        guard_reason, guard_kind = guard
                         run.messages.append(
                             ChatMessage(
                                 role="tool",
                                 name=action.tool_name,
                                 tool_call_id=action.id,
                                 content=guard_reason,
-                                metadata={"status": "skipped", "reason": "execution_guard"},
+                                metadata={"status": "skipped", "reason": guard_kind},
                             )
                         )
                         self._run_store.save_run(run)
@@ -310,6 +315,7 @@ class AgentRunner:
                         continue
                     result_status = "succeeded" if result.ok else "failed"
                     read_only_signature = self._read_only_signature(action) if result.ok else None
+                    read_file_range = self._read_file_range(action) if result.ok else None
                     run.messages.append(
                         ChatMessage(
                             role="tool",
@@ -320,6 +326,7 @@ class AgentRunner:
                                 **result.metadata,
                                 "status": result_status,
                                 **({"read_only_signature": read_only_signature} if read_only_signature else {}),
+                                **({"read_file_range": read_file_range} if read_file_range else {}),
                             },
                         )
                     )
@@ -473,15 +480,208 @@ class AgentRunner:
                 return
             return
 
-    def _guard_read_only_action(self, run: Run, action: Action) -> str | None:
-        """Prevent repeated inspection loops while retaining all prior evidence."""
+    def _guard_read_only_action(self, run: Run, action: Action) -> tuple[str, str] | None:
+        """Prevent unproductive inspection loops without discarding evidence."""
+        strategy = run.research_strategy or classify_research_strategy(run)
+        if action.tool_name in {"web_search", "fetch_url"} and strategy.mode == "local_only":
+            return (
+                "Skipped: the user asked to work without web access. Use local and attached evidence only.",
+                "local_only",
+            )
+        if (
+            action.tool_name in {"web_search", "fetch_url"}
+            and strategy.requires_local_evidence
+            and not self._local_evidence_seen(run)
+        ):
+            return (
+                "Skipped: inspect the supplied local file or workspace first. Use web sources only if a "
+                "specific external fact is still missing after that inspection.",
+                "local_first",
+            )
+        if (
+            action.tool_name == "web_search"
+            and strategy.total_search_limit is not None
+            and self._search_total(run) >= strategy.total_search_limit
+        ):
+            return (
+                "Search budget reached for this task type. Continue from the collected evidence or ask the "
+                "user to authorize broader research in a follow-up.",
+                "search_budget",
+            )
+        if action.tool_name == "web_search" and self._search_streak(run) >= strategy.search_streak_limit:
+            return (
+                "Search paused: several searches have already returned results. Open a relevant result "
+                "with fetch_url, use the evidence already collected, or finish the task. A successful "
+                "source fetch will allow another search if it is still needed.",
+                "search_streak",
+            )
         signature = self._read_only_signature(action)
         if signature and signature in self._completed_read_only_signatures(run):
             return (
                 "Skipped: this exact read-only operation already completed earlier in the task. "
-                "Use its recorded result, request a different range, or proceed to the next task step."
+                "Use its recorded result, request a different range, or proceed to the next task step.",
+                "duplicate_read",
+            )
+        if action.tool_name == "web_search" and self._similar_search_done(run, action):
+            return (
+                "Skipped: a near-identical search already returned results. Open one of those pages "
+                "or continue with the evidence instead of rephrasing the same query.",
+                "similar_search",
+            )
+        read_range = self._read_file_range(action)
+        if read_range and self._covered_read_file_range(run, read_range):
+            return (
+                "Skipped: this file range is already covered by an earlier read of the unchanged file. "
+                "Use that result or continue from its next_offset.",
+                "covered_read",
             )
         return None
+
+    def _web_tool_offered(self, run: Run, tool_name: str) -> bool:
+        if tool_name not in {"web_search", "fetch_url"}:
+            return True
+        strategy = run.research_strategy or classify_research_strategy(run)
+        if strategy.mode == "local_only":
+            return False
+        if strategy.requires_local_evidence and not self._local_evidence_seen(run):
+            return False
+        if tool_name == "web_search":
+            if self._search_streak(run) >= strategy.search_streak_limit:
+                return False
+            if strategy.total_search_limit is not None and self._search_total(run) >= strategy.total_search_limit:
+                return False
+        return True
+
+    @staticmethod
+    def _search_total(run: Run) -> int:
+        current_turn = next(
+            (index for index in range(len(run.messages) - 1, -1, -1) if run.messages[index].role == "user"),
+            -1,
+        )
+        return sum(
+            message.role == "tool"
+            and message.name == "web_search"
+            and message.metadata.get("status") == "succeeded"
+            for message in run.messages[current_turn + 1:]
+        )
+
+    @staticmethod
+    def _local_evidence_seen(run: Run) -> bool:
+        users = [message for message in run.messages if message.role == "user"]
+        latest_attachments = users[-1].metadata.get("attachments") if users else []
+        has_file_attachment = any(
+            isinstance(item, dict) and item.get("kind") != "image"
+            for item in (latest_attachments or [])
+        )
+        current_turn = next(
+            (index for index in range(len(run.messages) - 1, -1, -1) if run.messages[index].role == "user"),
+            -1,
+        )
+        messages = run.messages[current_turn + 1:] if has_file_attachment else run.messages
+        names = {"read_file", "read_pdf"} if has_file_attachment else {"list_files", "read_file", "read_pdf"}
+        return any(
+            message.role == "tool"
+            and message.name in names
+            and message.metadata.get("status") == "succeeded"
+            for message in messages
+        )
+
+    @staticmethod
+    def _search_streak(run: Run) -> int:
+        """Count searches since the last successfully opened source in this user turn."""
+        streak = 0
+        for message in reversed(run.messages):
+            if message.role == "user":
+                break
+            if message.role != "tool":
+                continue
+            status = message.metadata.get("status")
+            if message.name == "fetch_url" and status == "succeeded":
+                break
+            if message.name == "web_search" and (
+                status == "succeeded"
+                or (status == "skipped" and message.metadata.get("reason") not in {
+                    "local_first", "local_only", "search_budget"
+                })
+            ):
+                streak += 1
+        return streak
+
+    @staticmethod
+    def _similar_search_done(run: Run, action: Action) -> bool:
+        raw_query = action.arguments.get("query")
+        if not isinstance(raw_query, str):
+            return False
+        query = re.sub(r"[^\w]+", "", raw_query.casefold())
+        # Short queries and changed year/version numbers can have very high
+        # character similarity while asking materially different questions.
+        if len(query) < 14:
+            return False
+        current_turn = next(
+            (index for index in range(len(run.messages) - 1, -1, -1) if run.messages[index].role == "user"),
+            -1,
+        )
+        for message in run.messages[current_turn + 1:]:
+            if message.role != "tool" or message.name != "web_search":
+                continue
+            if message.metadata.get("status") != "succeeded":
+                continue
+            earlier = message.metadata.get("query")
+            if not isinstance(earlier, str):
+                continue
+            previous = re.sub(r"[^\w]+", "", earlier.casefold())
+            if len(previous) < 14 or re.findall(r"\d+", query) != re.findall(r"\d+", previous):
+                continue
+            if SequenceMatcher(None, query, previous).ratio() >= 0.94:
+                return True
+        return False
+
+    def _read_file_range(self, action: Action) -> dict[str, str | int] | None:
+        if action.tool_name != "read_file":
+            return None
+        path = action.arguments.get("path")
+        offset = action.arguments.get("offset", 0)
+        max_chars = action.arguments.get("max_chars", 12000)
+        if not isinstance(path, str) or type(offset) is not int or type(max_chars) is not int:
+            return None
+        if offset < 0 or max_chars < 1:
+            return None
+        candidate = Path(path).expanduser()
+        target = (
+            candidate.resolve()
+            if candidate.is_absolute()
+            else (self._tool_context.workspace_root / candidate).resolve()
+        )
+        try:
+            stat = target.stat()
+        except OSError:
+            return None
+        return {
+            "path": str(target),
+            "version": f"{stat.st_mtime_ns}:{stat.st_size}",
+            "offset": offset,
+            "end": offset + max_chars,
+        }
+
+    @staticmethod
+    def _covered_read_file_range(run: Run, candidate: dict[str, str | int]) -> bool:
+        current_turn = next(
+            (index for index in range(len(run.messages) - 1, -1, -1) if run.messages[index].role == "user"),
+            -1,
+        )
+        for message in run.messages[current_turn + 1:]:
+            if message.role != "tool" or message.metadata.get("status") != "succeeded":
+                continue
+            previous = message.metadata.get("read_file_range")
+            if not isinstance(previous, dict):
+                continue
+            if previous.get("path") != candidate["path"] or previous.get("version") != candidate["version"]:
+                continue
+            start, end = previous.get("offset"), previous.get("end")
+            if type(start) is int and type(end) is int:
+                if start <= candidate["offset"] and end >= candidate["end"]:
+                    return True
+        return False
 
     def _completed_read_only_signatures(self, run: Run) -> set[str]:
         current_turn = next(
