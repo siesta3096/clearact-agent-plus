@@ -308,6 +308,8 @@ class FetchUrlTool:
                 text, extractor = _normalize(_strip_tags(response.text)), "html"
         else:
             text, extractor = response.text, "raw"
+        if not text.strip() or (extractor in {"readability", "html"} and _is_error_page(text)):
+            raise ToolValidationError("Fetched page has no usable content or is an error page")
         return self._result(
             text,
             max_chars,

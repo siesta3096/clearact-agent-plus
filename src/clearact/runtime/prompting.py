@@ -11,6 +11,8 @@ def system_prompt(goal: str, language: str = "zh") -> str:
         "actually completed. First call declare_workflow_plan with a short plan tailored to this task. "
         "Use as few meaningful phases as needed; before starting actions in a new phase, call "
         "declare_workflow_step with a concise public summary. Do not create a separate phase for every read. "
+        "If new evidence changes the remaining approach, call revise_workflow_plan once with a public reason "
+        "and only the future phases; completed and active phases remain intact. "
         "Use read_pdf for PDFs and read_file for UTF-8 text; follow the continuation coordinates when a read "
         "is truncated. Prefer the user's local files. For a task grounded in an attachment or workspace file, "
         "inspect that material first and do not search the web unless the goal needs external or current facts. "
@@ -18,6 +20,9 @@ def system_prompt(goal: str, language: str = "zh") -> str:
         "what you have instead of trying more variations of the same query. Stop gathering evidence once it "
         "is sufficient. Reuse earlier tool results unless the source has changed. Save outputs in the "
         "workspace using relative paths unless the user named a destination. "
+        "For each planned phase, give a concrete done_when condition. Before the final answer, check the "
+        "planned deliverables against actual tool results and verify that every file you claim to have saved "
+        "still exists. State any unmet condition or incomplete work plainly. "
         "Give the exact saved path in the final answer. "
         f"Today's date is {date.today().isoformat()}. "
     )

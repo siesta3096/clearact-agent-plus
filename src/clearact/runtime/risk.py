@@ -13,6 +13,37 @@ class RiskEvaluator:
         self._tool_risk_hints = tool_risk_hints or {}
 
     def assess(self, action: Action) -> RiskAssessment:
+        if action.tool_name == "computer_use":
+            operation = action.arguments.get("action")
+            target = str(action.arguments.get("target", "")).casefold()
+            irreversible_words = (
+                "submit", "send", "publish", "delete", "remove", "purchase", "buy", "checkout", "payment",
+                "transfer", "order", "发送", "发布", "删除", "移除", "购买", "支付", "付款", "转账", "下单",
+            )
+            if operation == "click" and any(word in target for word in irreversible_words):
+                return RiskAssessment(
+                    level=RiskLevel.RED,
+                    hard_stop=True,
+                    reasons=["该按钮可能提交、发送、删除或产生其他不可轻易撤销的网页操作。"],
+                    category="destructive",
+                )
+            if operation in {"navigate", "inspect", "scroll", "back", "reload"}:
+                return RiskAssessment(
+                    level=RiskLevel.WHITE,
+                    reasons=["读取或浏览用户主动打开的网页会话，不会提交页面数据。"],
+                    category="web_read",
+                )
+            if operation in {"click", "type", "press"}:
+                return RiskAssessment(
+                    level=RiskLevel.YELLOW,
+                    reasons=["点击或输入可能改变网页状态；请检查页面和目标后再允许。"],
+                    category="browser_interaction",
+                )
+            return RiskAssessment(
+                level=RiskLevel.YELLOW,
+                reasons=["未知浏览器动作按可能改变网页状态处理。"],
+                category="browser_interaction",
+            )
         if action.tool_name in self._rules.get("hard_stop_operations", []):
             return RiskAssessment(
                 level=RiskLevel.RED,
@@ -28,6 +59,7 @@ class RiskEvaluator:
             if hint.get("destructive"):
                 return RiskAssessment(
                     level=RiskLevel.RED,
+                    hard_stop=True,
                     reasons=["MCP 服务将此工具声明为可能产生破坏性副作用。"],
                     category="destructive",
                 )
@@ -46,7 +78,8 @@ class RiskEvaluator:
             return self._assess_write(action)
         if action.tool_name in {"delete_file", "execute_command"}:
             return RiskAssessment(
-                level=RiskLevel.RED, reasons=["删除或命令执行属于高影响操作。"], category="destructive"
+                level=RiskLevel.RED, hard_stop=True,
+                reasons=["删除或命令执行属于高影响操作。"], category="destructive"
             )
         return RiskAssessment(level=RiskLevel.YELLOW, reasons=["未知工具默认按受控修改处理。"], category="other")
 

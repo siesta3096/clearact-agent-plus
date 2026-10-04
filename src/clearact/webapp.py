@@ -39,6 +39,7 @@ from clearact.runtime.prompting import system_prompt
 from clearact.settings import load_settings
 from clearact.storage.run_store import RunStore
 from clearact.storage.snapshots import SnapshotStore
+from clearact.tools.computer_use import BrowserSessionManager
 from clearact.tools.mcp import MCPManager
 
 _ASSET_DIR = Path(__file__).with_name("web")
@@ -47,6 +48,7 @@ app = FastAPI(title="ClearAct Console")
 _active_tasks: dict[str, asyncio.Task] = {}
 _active_runs: dict[str, Run] = {}
 _pending_approvals: dict[str, dict[str, Any]] = {}
+_computer_use_sessions = BrowserSessionManager()
 
 
 class WebApprovalGate:
@@ -71,6 +73,8 @@ class StartRunRequest(BaseModel):
     run_id: str | None = None
     rewind_action_id: str | None = None
     rewind_step_id: str | None = None
+    rewind_base_updated_at: str | None = Field(default=None, max_length=64)
+    rewind_preview_token: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
     interface_language: str | None = Field(default=None, pattern="^(zh|en)$")
     profile: str | None = None
     workdir: str | None = None
@@ -78,6 +82,24 @@ class StartRunRequest(BaseModel):
     max_iterations: int | None = Field(default=None, ge=1, le=10_000)
     max_tool_calls: int | None = Field(default=None, ge=1, le=100_000)
     attachments: list[AttachmentReference] = Field(default_factory=list, max_length=8)
+    browser_session_id: str | None = Field(default=None, max_length=128)
+
+
+class BrowserSessionRequest(BaseModel):
+    run_id: str | None = Field(default=None, max_length=80)
+
+
+class BrowserControlRequest(BaseModel):
+    action: str = Field(pattern="^(navigate|back|reload|click|type|press|scroll|resize)$")
+    url: str | None = Field(default=None, max_length=4000)
+    text: str | None = Field(default=None, max_length=1000)
+    key: str | None = Field(default=None, max_length=32)
+    x: float | None = None
+    y: float | None = None
+    dx: int = Field(default=0, ge=-1000, le=1000)
+    dy: int = Field(default=600, ge=-1000, le=1000)
+    width: int = Field(default=1280, ge=800, le=1920)
+    height: int = Field(default=820, ge=700, le=1800)
 
 
 class AttachmentReference(BaseModel):
@@ -282,9 +304,9 @@ def _mcp_server_config(request: MCPServerRequest, previous: dict[str, Any] | Non
 
 
 def _rollback_discarded_effects(
-    run: Run, cutoff: int, snapshot_store: SnapshotStore
+    run: Run, cutoff: int, snapshot_store: SnapshotStore, *, dry_run: bool = False
 ) -> tuple[list[str], list[str]]:
-    """Undo local file writes in reverse order and flag effects we cannot undo."""
+    """Undo local writes only when the file still matches the agent's last write."""
     actions = {
         action.id: action
         for message in run.messages[cutoff:]
@@ -292,6 +314,7 @@ def _rollback_discarded_effects(
     }
     restored: list[str] = []
     warnings: list[str] = []
+    virtual_files: dict[Path, str | None] = {}
     for message in reversed(run.messages[cutoff:]):
         if message.role != "tool" or message.metadata.get("status") != "succeeded":
             continue
@@ -299,13 +322,180 @@ def _rollback_discarded_effects(
         snapshot_id = message.metadata.get("snapshot_id")
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
-                snapshot_store.restore(snapshot_id)
+                target, existed, before = snapshot_store.load_before_write(snapshot_id)
+                requested_path = action.arguments.get("path") if action and action.tool_name == "write_file" else None
+                if not isinstance(requested_path, str) or snapshot_store.workspace_root is None:
+                    warnings.append(f"Could not verify the write target of {snapshot_id}; left it unchanged")
+                    continue
+                candidate = Path(requested_path).expanduser()
+                expected_path = (
+                    candidate.resolve() if candidate.is_absolute()
+                    else (snapshot_store.workspace_root / candidate).resolve()
+                )
+                recorded_path = message.metadata.get("path")
+                recorded_target = None
+                if isinstance(recorded_path, str):
+                    recorded_candidate = Path(recorded_path).expanduser()
+                    recorded_target = (
+                        recorded_candidate.resolve() if recorded_candidate.is_absolute()
+                        else (snapshot_store.workspace_root / recorded_candidate).resolve()
+                    )
+                if expected_path != target or (
+                    recorded_target is not None and recorded_target != target
+                ):
+                    warnings.append(f"Snapshot path does not match the write action; left unchanged: {target}")
+                    continue
+                expected = action.arguments.get("content") if action and action.tool_name == "write_file" else None
+                if not isinstance(expected, str):
+                    warnings.append(f"Could not verify the current content of {target}; left it unchanged")
+                    continue
+                current = virtual_files.get(target) if target in virtual_files else (
+                    target.read_text(encoding="utf-8") if target.is_file() else None
+                )
+                if current != expected:
+                    warnings.append(f"File changed after this action; left it unchanged: {target}")
+                    continue
+                if not dry_run:
+                    snapshot_store.restore(snapshot_id)
+                virtual_files[target] = before if existed else None
                 restored.append(snapshot_id)
-            except (FileNotFoundError, OSError, ValueError) as exc:
+            except (FileNotFoundError, OSError, UnicodeError, ValueError, KeyError) as exc:
                 warnings.append(f"Could not restore {snapshot_id}: {exc}")
-        elif action and (action.tool_name.startswith("mcp__") or action.tool_name == "write_file"):
+        elif action and (
+            action.tool_name.startswith("mcp__")
+            or action.tool_name == "write_file"
+            or (action.tool_name == "computer_use" and action.arguments.get("action") in {"click", "type", "press"})
+        ):
             warnings.append(f"External effect may remain: {action.tool_name} ({action.id})")
     return restored, warnings
+
+
+def _resolve_rewind_boundary(
+    run: Run, step_id: str | None, action_id: str | None
+) -> tuple[int, int, str]:
+    """Find the same message and phase boundary for preview and execution."""
+    if step_id:
+        step_index = next((index for index, step in enumerate(run.workflow_steps) if step.id == step_id), None)
+        if step_index is None:
+            raise HTTPException(status_code=422, detail="The selected workflow step is no longer available.")
+        step = run.workflow_steps[step_index]
+        cutoff = step.start_message_index
+        if step.id == "understand":
+            cutoff = next(
+                (index for index, message in enumerate(run.messages) if message.role == "assistant"),
+                len(run.messages),
+            )
+        if cutoff is None or not 0 <= cutoff <= len(run.messages):
+            raise HTTPException(status_code=422, detail="The selected workflow step has no rewind boundary.")
+        return cutoff, step_index, step.id
+    cutoff = next(
+        (
+            index
+            for index, message in enumerate(run.messages)
+            if any(action.id == action_id for action in message.tool_calls)
+        ),
+        None,
+    )
+    if cutoff is None:
+        raise HTTPException(status_code=422, detail="The selected action is no longer available.")
+    step_index = next(
+        (index for index, step in enumerate(run.workflow_steps) if action_id in step.action_ids),
+        len(run.workflow_steps),
+    )
+    target_id = run.workflow_steps[step_index].id if step_index < len(run.workflow_steps) else str(action_id)
+    return cutoff, step_index, target_id
+
+
+def _restored_file_contents(snapshot_store: SnapshotStore, snapshot_ids: list[str]) -> dict[Path, str | None]:
+    """Predict the final file contents after reversing discarded writes."""
+    contents: dict[Path, str | None] = {}
+    for snapshot_id in snapshot_ids:
+        target, existed, before = snapshot_store.load_before_write(snapshot_id)
+        contents[target] = before if existed else None
+    return contents
+
+
+def _recorded_file_version(message: ChatMessage) -> str | None:
+    read_range = message.metadata.get("read_file_range")
+    version = read_range.get("version") if isinstance(read_range, dict) else None
+    if isinstance(version, str):
+        return version
+    signature = message.metadata.get("read_only_signature")
+    if not isinstance(signature, str):
+        return None
+    try:
+        prefix, _ = signature.rsplit(":{", 1)
+        _, recorded_mtime, recorded_size = prefix.rsplit(":", 2)
+        return f"{int(recorded_mtime)}:{int(recorded_size)}"
+    except ValueError:
+        return None
+
+
+def _rewind_preview_token(snapshot_ids: list[str], warnings: list[str]) -> str:
+    """Bind a confirmation to the file effects shown in the rewind preview."""
+    state = json.dumps({"snapshots": snapshot_ids, "warnings": warnings}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+def _retained_file_read_issues(
+    run: Run, cutoff: int, restored_contents: dict[Path, str | None]
+) -> dict[str, str]:
+    """Identify changed or unverifiable local evidence in the retained branch."""
+    issues: dict[str, str] = {}
+    retained = run.messages[:cutoff]
+    for index, message in enumerate(retained):
+        if message.role != "tool" or message.name not in {"read_file", "read_pdf", "list_files"}:
+            continue
+        if message.metadata.get("status") != "succeeded":
+            continue
+        raw_path = message.metadata.get("path")
+        if not isinstance(raw_path, str):
+            continue  # Without a path there is no safe target to re-read.
+        try:
+            target = Path(raw_path).resolve()
+        except (ValueError, OSError):
+            continue
+        recorded_version = _recorded_file_version(message)
+        if recorded_version is None:
+            issues[str(target)] = "unverified"
+            continue
+        later_retained_write = any(
+            later.role == "tool" and later.name == "write_file"
+            and later.metadata.get("status") == "succeeded"
+            and later.metadata.get("path") == str(target)
+            for later in retained[index + 1:]
+        )
+        if target in restored_contents and not later_retained_write:
+            restored = restored_contents[target]
+            read_range = message.metadata.get("read_file_range")
+            offset = read_range.get("offset", 0) if isinstance(read_range, dict) else 0
+            can_compare = (
+                message.name == "read_file" and isinstance(restored, str)
+                and type(offset) is int and offset >= 0
+                and message.metadata.get("truncated") is False
+                and isinstance(message.content, str)
+            )
+            if can_compare and message.content == restored[offset:]:
+                continue
+            issues[str(target)] = "changed" if can_compare or restored is None else "unverified"
+            continue
+        try:
+            stat = target.stat()
+            current_version = f"{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            current_version = None
+        if current_version != recorded_version:
+            issues[str(target)] = "changed"
+    return issues
+
+
+def _retained_read_warnings(issues: dict[str, str]) -> list[str]:
+    return [
+        (f"此前读取的文件已变化，继续使用前需要重新读取：{path}"
+         if issue == "changed" else
+         f"旧记录缺少可核验的文件版本，继续使用前需要重新读取：{path}")
+        for path, issue in issues.items()
+    ]
 
 
 @app.get("/")
@@ -343,6 +533,95 @@ async def config() -> dict:
         "mcp_servers": _public_mcp_servers(json.loads((root / "clearact.json").read_text(encoding="utf-8"))),
         "security": {"local_only": True, "api_keys_exposed": False},
     }
+
+
+@app.post("/api/computer-use/sessions", status_code=201)
+async def create_computer_use_session(request: BrowserSessionRequest) -> dict[str, Any]:
+    root = cli._project_root()
+    settings = load_settings(root)
+    owner_run_id = request.run_id
+    if owner_run_id:
+        try:
+            RunStore(settings.data_root).load_run(owner_run_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="Topic not found.") from exc
+    try:
+        session = await _computer_use_sessions.create(settings.network.allow_localhost, owner_run_id)
+        state = await session.state()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"id": session.id, **state, "width": 1280, "height": 820}
+
+
+@app.get("/api/computer-use/sessions/{session_id}")
+async def computer_use_session_state(session_id: str) -> dict[str, str]:
+    session = _computer_use_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Browser session expired.")
+    try:
+        return await session.state()
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Browser page is unavailable: {exc}") from exc
+
+
+@app.get("/api/computer-use/sessions/{session_id}/screenshot")
+async def computer_use_screenshot(session_id: str) -> Response:
+    session = _computer_use_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Browser session expired.")
+    try:
+        image = await session.screenshot()
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"Browser screenshot unavailable: {exc}") from exc
+    return Response(
+        content=image,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/api/computer-use/sessions/{session_id}/control")
+async def control_computer_use_session(session_id: str, request: BrowserControlRequest) -> dict[str, str]:
+    session = _computer_use_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Browser session expired.")
+    try:
+        if request.action == "navigate":
+            if not request.url:
+                raise ValueError("Enter a web address first.")
+            state = await session.navigate(request.url)
+        elif request.action in {"back", "reload"}:
+            state = await session.control(request.action)
+        elif request.action == "click":
+            if request.x is None or request.y is None:
+                raise ValueError("Click coordinates are required.")
+            state = await session.control("click_point", x=request.x, y=request.y)
+        elif request.action == "type":
+            state = await session.control("type_point", text=request.text or "")
+        elif request.action == "press":
+            key = request.key or ""
+            state = await session.control("press", key=key)
+        elif request.action == "resize":
+            state = await session.control("resize", width=request.width, height=request.height)
+        else:
+            state = await session.control("scroll", dx=request.dx, dy=request.dy)
+        return state
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/computer-use/sessions/{session_id}")
+async def close_computer_use_session(session_id: str) -> dict[str, bool]:
+    if not await _computer_use_sessions.close(session_id):
+        raise HTTPException(status_code=404, detail="Browser session already closed.")
+    return {"closed": True}
+
+
+@app.on_event("shutdown")
+async def close_computer_use_sessions() -> None:
+    await _computer_use_sessions.close_all()
 
 
 @app.get("/api/settings")
@@ -393,6 +672,7 @@ async def update_settings(request: SettingsRequest) -> dict:
     allowed_capabilities = {
         "local_read",
         "web_read",
+        "browser_interaction",
         "workspace_create",
         "workspace_modify",
         "mcp_read",
@@ -577,6 +857,10 @@ async def runs(limit: int = 30) -> list[dict]:
             "goal": run.goal,
             "title": run.title or run.goal[:28],
             "status": run.status.value,
+            "needs_review": run.status == RunStatus.COMPLETED and (
+                bool(run.stage_notes.get("completion_review"))
+                or any(step.status == "needs_review" for step in run.workflow_steps)
+            ),
             "updated_at": run.updated_at.isoformat(),
         }
         for run in store.list_runs(limit)
@@ -679,6 +963,57 @@ async def run_detail(run_id: str, request: Request, response: Response) -> Any:
     return result
 
 
+@app.get("/api/runs/{run_id}/rewind-preview")
+async def rewind_preview(run_id: str, step_id: str) -> dict[str, Any]:
+    settings = load_settings(cli._project_root())
+    store = RunStore(settings.data_root)
+    try:
+        run = store.load_run(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Topic not found.") from exc
+    task = _active_tasks.get(run_id)
+    if task and not task.done():
+        raise HTTPException(status_code=409, detail="Wait for this task to stop before rewinding.")
+    cutoff, step_cutoff, target_id = _resolve_rewind_boundary(run, step_id, None)
+    workspace = Path(run.execution.workdir or settings.workspace_root).resolve()
+    snapshots = SnapshotStore(settings.data_root, workspace)
+    restorable, warnings = _rollback_discarded_effects(run, cutoff, snapshots, dry_run=True)
+    paths: list[str] = []
+    restored_contents = _restored_file_contents(snapshots, restorable)
+    for target in restored_contents:
+        path = str(target.relative_to(workspace))
+        if path not in paths:
+            paths.append(path)
+    source_issues = _retained_file_read_issues(run, cutoff, restored_contents)
+    warnings.extend(_retained_read_warnings(source_issues))
+    return {
+        "from_step_id": target_id,
+        "from_step_title": run.workflow_steps[step_cutoff].title,
+        "base_updated_at": run.updated_at.isoformat(),
+        "preview_token": _rewind_preview_token(restorable, warnings),
+        "reused_steps": [step.model_dump(include={"id", "title"}) for step in run.workflow_steps[:step_cutoff]],
+        "discarded_steps": [step.model_dump(include={"id", "title"}) for step in run.workflow_steps[step_cutoff:]],
+        "discarded_message_count": len(run.messages) - cutoff,
+        "restore_paths": paths,
+        "stale_source_paths": [path for path, issue in source_issues.items() if issue == "changed"],
+        "unverified_source_paths": [path for path, issue in source_issues.items() if issue == "unverified"],
+        "warnings": warnings,
+    }
+
+
+@app.get("/api/runs/{run_id}/revisions/{revision_id}")
+async def revision_archive(run_id: str, revision_id: str) -> dict[str, Any]:
+    store = RunStore(load_settings(cli._project_root()).data_root)
+    try:
+        run = store.load_run(run_id)
+        revision = next(item for item in run.workflow_revisions if item.id == revision_id)
+        if not revision.archive_available:
+            raise FileNotFoundError(revision_id)
+        return store.load_revision_archive(run_id, revision_id)
+    except (FileNotFoundError, StopIteration, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Revision archive not found.") from exc
+
+
 @app.get("/api/runs/{run_id}/actions/{action_id}/preview")
 async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
     """Show only a file action recorded by this run, never an arbitrary path."""
@@ -703,21 +1038,41 @@ async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="File action has no recorded path")
     workspace = Path(run.execution.workdir or settings.workspace_root).resolve()
     target = Path(recorded_path).resolve()
+    raw_action_path = action.arguments.get("path")
+    if not isinstance(raw_action_path, str) or not raw_action_path:
+        raise HTTPException(status_code=409, detail="File action has no path argument")
+    candidate = Path(raw_action_path).expanduser()
+    action_target = candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
+    if action_target != target:
+        raise HTTPException(status_code=403, detail="Recorded file path does not match the action")
     try:
         target.relative_to(workspace)
-    except ValueError as exc:
-        raise HTTPException(status_code=403, detail="File is outside this run's workspace") from exc
+        outside_workspace = False
+    except ValueError:
+        outside_workspace = True
     limit = 120_000
     if action.tool_name != "write_file":
         content = result.content or ""
+        recorded_version = _recorded_file_version(result)
+        try:
+            stat = target.stat()
+            current_version = f"{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            current_version = None
+        source_state = (
+            "unstable" if result.metadata.get("source_changed_around_read") is True else
+            "unverified" if recorded_version is None else
+            "current" if recorded_version == current_version else "changed"
+        )
         return {
             "kind": "content", "path": str(target), "content": content[:limit],
-            "truncated": len(content) > limit, "source": "recorded_action",
+            "truncated": len(content) > limit, "source": "recorded_action", "source_state": source_state,
+            "outside_workspace": outside_workspace,
         }
     snapshot_id = result.metadata.get("snapshot_id")
     if not isinstance(snapshot_id, str):
         raise HTTPException(status_code=409, detail="No before-image was recorded")
-    snapshots = SnapshotStore(settings.data_root, workspace_root=workspace)
+    snapshots = SnapshotStore(settings.data_root, workspace_root=None if outside_workspace else workspace)
     try:
         before_path, existed, before = snapshots.load_before_write(snapshot_id)
     except (FileNotFoundError, ValueError, KeyError) as exc:
@@ -735,6 +1090,7 @@ async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
     return {
         "kind": "diff", "path": str(target), "content": diff[:limit],
         "truncated": len(diff) > limit, "created": not existed, "source": "recorded_action",
+        "outside_workspace": outside_workspace,
     }
 
 
@@ -793,13 +1149,15 @@ async def delete_run(run_id: str) -> dict:
     task = _active_tasks.get(run_id)
     if task and not task.done():
         raise HTTPException(status_code=409, detail="Cannot delete a running topic; stop it first.")
-    root = RunStore(load_settings(cli._project_root()).data_root)._root
+    store = RunStore(load_settings(cli._project_root()).data_root)
+    root = store._root
     path, events = root / f"{run_id}.json", root / f"{run_id}.events.jsonl"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Topic not found.")
     path.unlink()
     if events.exists():
         events.unlink()
+    store.delete_revision_archives(run_id)
     return {"deleted": True}
 
 
@@ -837,74 +1195,69 @@ async def start_run(request: StartRunRequest) -> dict:
         interface_language=request.interface_language or previous.interface_language or "zh",
     )
     effective_autonomy = _effective_autonomy(request, settings.default_autonomy, run)
+    rewound_revision_id: str | None = None
 
     if run is not None:
         # A normal follow-up resumes the topic. A stage rewind deliberately
         # discards that action and everything after it, then restarts from the
         # retained earlier context plus the user's feedback.
         if request.rewind_step_id or request.rewind_action_id:
-            step_cutoff = None
-            cutoff = None
-            target_step_id = request.rewind_step_id
-            if request.rewind_step_id:
-                step_cutoff = next(
-                    (index for index, step in enumerate(run.workflow_steps) if step.id == request.rewind_step_id),
-                    None,
+            if request.rewind_base_updated_at and request.rewind_base_updated_at != run.updated_at.isoformat():
+                raise HTTPException(
+                    status_code=409,
+                    detail="This topic changed after the rewind preview. Review it again.",
                 )
-                if step_cutoff is not None:
-                    step = run.workflow_steps[step_cutoff]
-                    cutoff = step.start_message_index
-                    if step.id == "understand":
-                        cutoff = next(
-                            (index for index, message in enumerate(run.messages) if message.role == "assistant"),
-                            len(run.messages),
-                        )
-            else:
-                cutoff = next(
-                    (
-                        index
-                        for index, message in enumerate(run.messages)
-                        if any(action.id == request.rewind_action_id for action in message.tool_calls)
-                    ),
-                    None,
-                )
-                step_cutoff = next(
-                    (
-                        index
-                        for index, step in enumerate(run.workflow_steps)
-                        if request.rewind_action_id in step.action_ids
-                    ),
-                    len(run.workflow_steps),
-                )
-                target_step_id = next(
-                    (
-                        step.id
-                        for step in run.workflow_steps
-                        if request.rewind_action_id in step.action_ids
-                    ),
-                    request.rewind_action_id,
-                )
-            if cutoff is None or step_cutoff is None:
-                raise HTTPException(status_code=422, detail="The selected workflow step is no longer available.")
+            cutoff, step_cutoff, target_step_id = _resolve_rewind_boundary(
+                run, request.rewind_step_id, request.rewind_action_id
+            )
             retained_steps = run.workflow_steps[:step_cutoff]
             reused_ids = [step.id for step in retained_steps]
             discarded_count = len(run.messages) - cutoff
+            revision = WorkflowRevision(
+                from_step_id=target_step_id,
+                from_step_title=(
+                    run.workflow_steps[step_cutoff].title if step_cutoff < len(run.workflow_steps) else None
+                ),
+                feedback=request.goal,
+                reused_step_ids=reused_ids,
+                discarded_message_count=discarded_count,
+                archive_available=True,
+            )
+            snapshots = SnapshotStore(settings.data_root, workdir)
+            if request.rewind_preview_token:
+                planned_restore, planned_warnings = _rollback_discarded_effects(
+                    run, cutoff, snapshots, dry_run=True,
+                )
+                planned_contents = _restored_file_contents(snapshots, planned_restore)
+                planned_issues = _retained_file_read_issues(run, cutoff, planned_contents)
+                planned_warnings.extend(_retained_read_warnings(planned_issues))
+                if _rewind_preview_token(planned_restore, planned_warnings) != request.rewind_preview_token:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="The files changed after the rewind preview. Review it again.",
+                    )
+            store.save_revision_archive(run, revision.id)
             restored, rollback_warnings = _rollback_discarded_effects(
                 run,
                 cutoff,
-                SnapshotStore(settings.data_root, workdir),
+                snapshots,
             )
-            run.workflow_revisions.append(
-                WorkflowRevision(
-                    from_step_id=target_step_id or "unknown",
-                    feedback=request.goal,
-                    reused_step_ids=reused_ids,
-                    discarded_message_count=discarded_count,
-                    restored_snapshot_ids=restored,
-                    rollback_warnings=rollback_warnings,
-                )
-            )
+            restored_contents = _restored_file_contents(snapshots, restored)
+            source_issues = _retained_file_read_issues(run, cutoff, restored_contents)
+            rollback_warnings.extend(_retained_read_warnings(source_issues))
+            revision.restored_snapshot_ids = restored
+            revision.rollback_warnings = rollback_warnings
+            run.workflow_revisions.append(revision)
+            rewound_revision_id = revision.id
             run.messages = run.messages[:cutoff]
+            if source_issues:
+                run.messages.append(ChatMessage(
+                    role="system",
+                    content=(
+                        "Some retained file evidence changed or could not be verified. Re-read these paths "
+                        f"before relying on prior tool results or claiming completion: {', '.join(source_issues)}"
+                    ),
+                ))
             run.workflow_steps = retained_steps
             run.workflow_plan = []
             run.stage_notes.pop("understand", None)
@@ -912,19 +1265,40 @@ async def start_run(request: StartRunRequest) -> dict:
                 action.id
                 for message in run.messages
                 for action in message.tool_calls
-                if action.tool_name not in {"declare_workflow_plan", "declare_workflow_step"}
             }
             store.prune_events_to_actions(run.id, kept_actions)
+            store.append_event(RunEvent(
+                type="workflow.rewound",
+                run_id=run.id,
+                title="按反馈回到较早阶段",
+                detail=request.goal[:500],
+                data={
+                    "revision_id": revision.id,
+                    "from_step_id": target_step_id,
+                    "reused_steps": len(reused_ids),
+                    "restored_files": len(restored),
+                    "warnings": rollback_warnings,
+                },
+            ))
         run.status = RunStatus.CREATED
         run.policy.autonomy_threshold = effective_autonomy
-        run.messages.append(ChatMessage(role="user", content=request.goal, metadata={"attachments": attachments}))
+        run.policy.capability_rules.setdefault("browser_interaction", "ask")
+        user_metadata: dict[str, Any] = {"attachments": attachments}
+        if rewound_revision_id:
+            user_metadata["rewind_revision_id"] = rewound_revision_id
+        run.messages.append(ChatMessage(role="user", content=request.goal, metadata=user_metadata))
     else:
         run = Run(
             goal=request.goal,
             policy=UserPolicy(
                 autonomy_threshold=effective_autonomy,
                 allowed_scopes=[str(workdir.resolve())],
-                capability_rules=getattr(settings, "default_capability_rules", {}),
+                capability_rules={
+                    **getattr(settings, "default_capability_rules", {}),
+                    "browser_interaction": getattr(settings, "default_capability_rules", {}).get(
+                        "browser_interaction", "ask"
+                    ),
+                },
             ),
             messages=[
                 ChatMessage(role="system", content=system_prompt(request.goal, execution.interface_language)),
@@ -933,6 +1307,12 @@ async def start_run(request: StartRunRequest) -> dict:
         )
     run.execution = execution
     run.policy.allowed_scopes = [str(workdir)]
+    if request.browser_session_id:
+        active_run_ids = {run_id for run_id, task in _active_tasks.items() if not task.done()}
+        try:
+            await _computer_use_sessions.bind(request.browser_session_id, run.id, active_run_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     store.save_run(run)
 
     async def execute() -> None:
@@ -948,6 +1328,7 @@ async def start_run(request: StartRunRequest) -> dict:
                 interface_language=execution.interface_language,
                 approval_gate=WebApprovalGate(run.id),
                 render_console=False,
+                computer_use_manager=_computer_use_sessions,
             )
         except Exception as exc:
             # Provider/MCP initialization can fail before AgentRunner takes

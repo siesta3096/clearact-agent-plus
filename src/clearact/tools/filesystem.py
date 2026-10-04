@@ -11,6 +11,12 @@ from clearact.domain.errors import ScopeViolationError, ToolValidationError
 from clearact.domain.models import ToolDefinition, ToolResult
 from clearact.tools.base import ToolContext
 
+MAX_READ_CHARS = 50_000
+
+
+def _stat_version(stat: os.stat_result) -> str:
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
 
 class _FilesystemTool:
     def _resolve(self, context: ToolContext, raw_path: str, *, writing: bool = False) -> Path:
@@ -95,7 +101,7 @@ class ReadFileTool(_FilesystemTool):
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "max_chars": {"type": "integer", "minimum": 1, "default": 12000},
+                    "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_READ_CHARS, "default": 12000},
                     "offset": {"type": "integer", "minimum": 0, "default": 0},
                 },
                 "required": ["path"],
@@ -113,11 +119,13 @@ class ReadFileTool(_FilesystemTool):
             or offset < 0
         ):
             raise ToolValidationError("path, max_chars, and offset are invalid")
+        max_chars = min(max_chars, MAX_READ_CHARS)
         target = self._resolve(context, raw_path)
         if not target.is_file():
             raise ToolValidationError("path must be an existing file")
         try:
             with target.open("r", encoding="utf-8") as handle:
+                before_stat = os.fstat(handle.fileno())
                 remaining = offset
                 while remaining:
                     skipped = handle.read(min(remaining, 8192))
@@ -126,8 +134,16 @@ class ReadFileTool(_FilesystemTool):
                     remaining -= len(skipped)
                 chunk = handle.read(max_chars)
                 truncated = bool(handle.read(1))
+                after_stat = os.fstat(handle.fileno())
         except UnicodeDecodeError as exc:
             raise ToolValidationError("only UTF-8 text files are supported") from exc
+        try:
+            path_version = _stat_version(target.stat())
+        except OSError:
+            path_version = None
+        source_version = _stat_version(before_stat)
+        if source_version != _stat_version(after_stat) or source_version != path_version:
+            source_version = None
         next_offset = offset + len(chunk) if truncated else None
         if next_offset is not None:
             continuation = json.dumps(
@@ -139,7 +155,10 @@ class ReadFileTool(_FilesystemTool):
             tool_name=self.name,
             ok=True,
             content=chunk,
-            metadata={"path": str(target), "truncated": next_offset is not None, "next_offset": next_offset},
+            metadata={
+                "path": str(target), "truncated": next_offset is not None, "next_offset": next_offset,
+                "source_version": source_version,
+            },
         )
 
 
@@ -160,7 +179,7 @@ class ReadPdfTool(_FilesystemTool):
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "max_chars": {"type": "integer", "minimum": 1, "default": 30000},
+                    "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_READ_CHARS, "default": 30000},
                     "start_page": {"type": "integer", "minimum": 1, "default": 1},
                     "max_pages": {"type": "integer", "minimum": 1},
                     "page_offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -185,11 +204,13 @@ class ReadPdfTool(_FilesystemTool):
             or page_offset < 0
         ):
             raise ToolValidationError("path, max_chars, start_page, max_pages, or page_offset is invalid")
+        max_chars = min(max_chars, MAX_READ_CHARS)
         target = self._resolve(context, raw_path)
         if not target.is_file():
             raise ToolValidationError("path must be an existing file")
         if target.suffix.lower() != ".pdf":
             raise ToolValidationError("read_pdf only supports PDF files")
+        before_version = _stat_version(target.stat())
 
         def extract() -> tuple[str, int, int | None, int | None]:
             reader = PdfReader(str(target))
@@ -224,6 +245,11 @@ class ReadPdfTool(_FilesystemTool):
             raise
         except Exception as exc:
             raise ToolValidationError(f"could not extract text from PDF: {exc}") from exc
+        try:
+            after_version = _stat_version(target.stat())
+        except OSError:
+            after_version = None
+        source_version = before_version if before_version == after_version else None
         if not content.strip() and next_page is None:
             raise ToolValidationError(
                 "PDF contains no extractable text; upload page images or use a vision-capable model"
@@ -246,6 +272,7 @@ class ReadPdfTool(_FilesystemTool):
                 "truncated": next_page is not None,
                 "next_page": next_page,
                 "next_page_offset": next_page_offset,
+                "source_version": source_version,
             },
         )
 

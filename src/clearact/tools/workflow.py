@@ -33,6 +33,12 @@ class DeclareWorkflowPlanTool:
                                 "id": {"type": "string", "description": "Stable short identifier."},
                                 "title": {"type": "string", "description": "Task-specific phase title."},
                                 "summary": {"type": "string", "description": "What this phase will produce."},
+                                "done_when": {
+                                    "type": "string",
+                                    "description": (
+                                        "One concrete, user-visible condition for judging this phase complete."
+                                    ),
+                                },
                                 "kind": {
                                     "type": "string",
                                     "enum": ["research", "analysis", "files", "external", "general"],
@@ -92,4 +98,49 @@ class DeclareWorkflowStepTool:
             tool_name=self.name,
             ok=True,
             content="Workflow step recorded. Continue with the work described in this phase.",
+        )
+
+
+class ReviseWorkflowPlanTool:
+    """Replace only the not-yet-started phases when the task changes shape."""
+
+    name = "revise_workflow_plan"
+
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=(
+                "Update or extend the remaining user-visible phases when new evidence changes the approach. "
+                "Completed and active phases are preserved automatically. Supply only future phases "
+                "and a concise public reason; do not call this for minor wording changes."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string"},
+                    "steps": {
+                        "type": "array", "minItems": 1, "maxItems": 12,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "title": {"type": "string"},
+                                "summary": {"type": "string"},
+                                "done_when": {"type": "string"},
+                                "kind": {"type": "string"},
+                            },
+                            "required": ["id", "title", "summary"],
+                        },
+                    },
+                },
+                "required": ["reason", "steps"],
+            },
+        )
+
+    async def execute(self, arguments: dict, _context: ToolContext, action_id: str) -> ToolResult:
+        return ToolResult(
+            action_id=action_id,
+            tool_name=self.name,
+            ok=True,
+            content="Remaining workflow phases updated.",
         )

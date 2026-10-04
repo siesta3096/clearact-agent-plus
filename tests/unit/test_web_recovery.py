@@ -21,6 +21,18 @@ from clearact.domain.models import (
     WorkflowStep,
 )
 from clearact.storage.run_store import RunStore
+from clearact.storage.snapshots import SnapshotStore
+
+
+def test_restored_file_contents_uses_the_oldest_reversed_snapshot(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "source.txt"
+    snapshots = SnapshotStore(tmp_path / "data", workspace)
+    first = snapshots.save_before_write(target, "original", True)
+    second = snapshots.save_before_write(target, "intermediate", True)
+
+    assert webapp._restored_file_contents(snapshots, [second, first]) == {target: "original"}
 
 
 @pytest.fixture
@@ -75,6 +87,23 @@ def test_new_topic_starts_execution_without_extra_model_request(web_environment,
         assert listing[0]["title"] == goal[:28]
 
     asyncio.run(scenario())
+
+
+def test_history_marks_completed_topics_that_still_need_review(web_environment):
+    _, store = web_environment
+    run = Run(
+        goal="Inspect a file",
+        status=RunStatus.COMPLETED,
+        workflow_steps=[WorkflowStep(title="读取材料", summary="读取本地文件", status="needs_review")],
+    )
+    store.save_run(run)
+    listing = asyncio.run(webapp.runs())
+    assert listing[0]["status"] == "completed"
+    assert listing[0]["needs_review"] is True
+
+    run.workflow_steps[0].status = "completed"
+    store.save_run(run)
+    assert asyncio.run(webapp.runs())[0]["needs_review"] is False
 
 
 def test_workspace_browser_lists_folders_and_path_can_be_validated(web_environment):
@@ -423,7 +452,16 @@ def test_manual_rename_survives_current_and_follow_up_execution(web_environment,
 
 
 def test_step_rewind_reuses_earlier_phase_and_records_branch(web_environment, monkeypatch):
-    _, store = web_environment
+    settings, store = web_environment
+    source = settings.workspace_root / "source.txt"
+    source.write_text("original", encoding="utf-8")
+    stat = source.stat()
+    read_metadata = {
+        "status": "succeeded",
+        "path": str(source),
+        "truncated": False,
+        "read_only_signature": f"read_file:{source}:{stat.st_mtime_ns}:{stat.st_size}:{{}}",
+    }
     first = Action(id="first", tool_name="read_file", arguments={"path": "source.txt"})
     second = Action(id="second", tool_name="web_search", arguments={"query": "new facts"})
     run = Run(
@@ -433,7 +471,10 @@ def test_step_rewind_reuses_earlier_phase_and_records_branch(web_environment, mo
             ChatMessage(role="system", content="system"),
             ChatMessage(role="user", content="report"),
             ChatMessage(role="assistant", tool_calls=[first]),
-            ChatMessage(role="tool", name="read_file", tool_call_id=first.id, content="retained"),
+            ChatMessage(
+                role="tool", name="read_file", tool_call_id=first.id,
+                content="retained", metadata=read_metadata,
+            ),
             ChatMessage(role="assistant", tool_calls=[second]),
             ChatMessage(role="tool", name="web_search", tool_call_id=second.id, content="discarded"),
         ],
@@ -462,6 +503,7 @@ def test_step_rewind_reuses_earlier_phase_and_records_branch(web_environment, mo
         ],
     )
     store.save_run(run)
+    store.append_event(RunEvent(type="action.completed", run_id=run.id, action_id=second.id, title="旧分支检索"))
 
     async def execute(*args, **kwargs):
         return None
@@ -469,21 +511,66 @@ def test_step_rewind_reuses_earlier_phase_and_records_branch(web_environment, mo
     monkeypatch.setattr(webapp.cli, "_run", execute)
 
     async def scenario():
+        preview = await webapp.rewind_preview(run.id, "research-step")
+        assert preview["reused_steps"][-1]["title"] == "读取资料"
+        assert preview["discarded_steps"][0]["title"] == "补充检索"
+        assert preview["stale_source_paths"] == []
+        legacy = run.model_copy(deep=True)
+        legacy.messages[3].metadata.pop("read_only_signature")
+        store.save_run(legacy)
+        legacy_preview = await webapp.rewind_preview(run.id, "research-step")
+        assert legacy_preview["unverified_source_paths"] == [str(source)]
+        assert any("缺少可核验" in warning for warning in legacy_preview["warnings"])
+        store.save_run(run)
+        source.write_text("changed content", encoding="utf-8")
+        preview = await webapp.rewind_preview(run.id, "research-step")
+        assert preview["stale_source_paths"] == [str(source)]
+        assert any("重新读取" in warning for warning in preview["warnings"])
+        assert webapp._retained_file_read_issues(run, 4, {source: "changed content"}) == {
+            str(source): "changed"
+        }
+        matching_restore = run.model_copy(deep=True)
+        matching_restore.messages[3].content = "original"
+        assert webapp._retained_file_read_issues(matching_restore, 4, {source: "original"}) == {}
+        partial_read = matching_restore.model_copy(deep=True)
+        partial_read.messages[3].metadata["truncated"] = True
+        assert webapp._retained_file_read_issues(partial_read, 4, {source: "original"}) == {
+            str(source): "unverified"
+        }
+        retained_write = run.model_copy(deep=True)
+        retained_write.messages.insert(4, ChatMessage(
+            role="tool", name="write_file", tool_call_id="retained-write",
+            content="Updated", metadata={"status": "succeeded", "path": str(source)},
+        ))
+        assert webapp._retained_file_read_issues(retained_write, 5, {source: "original"}) == {
+            str(source): "changed"
+        }
+        assert store.load_run(run.id).messages[-1].content == "discarded"
         await webapp.start_run(
             webapp.StartRunRequest(
                 goal="只看官方来源",
                 run_id=run.id,
                 rewind_step_id="research-step",
+                rewind_base_updated_at=preview["base_updated_at"],
             )
         )
         await finish_run(run.id)
 
     asyncio.run(scenario())
     saved = store.load_run(run.id)
-    assert [message.content for message in saved.messages] == ["system", "report", None, "retained", "只看官方来源"]
+    assert [message.content for message in saved.messages[:4]] == ["system", "report", None, "retained"]
+    assert saved.messages[-2].role == "system" and str(source) in saved.messages[-2].content
+    assert saved.messages[-1].content == "只看官方来源"
+    assert saved.messages[-1].metadata["rewind_revision_id"] == saved.workflow_revisions[-1].id
     assert [step.id for step in saved.workflow_steps] == ["understand", "read-step"]
     assert saved.workflow_plan == []
     revision = saved.workflow_revisions[-1]
     assert revision.from_step_id == "research-step"
+    assert revision.from_step_title == "补充检索"
+    assert revision.archive_available
     assert revision.reused_step_ids == ["understand", "read-step"]
     assert revision.discarded_message_count == 2
+    assert any(str(source) in warning for warning in revision.rollback_warnings)
+    archive = asyncio.run(webapp.revision_archive(run.id, revision.id))
+    assert archive["run"]["messages"][-1]["content"] == "discarded"
+    assert archive["events"][-1]["title"] == "旧分支检索"

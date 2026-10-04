@@ -12,6 +12,8 @@ class PolicyEngine:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用联网操作。")
         if tool_name and tool_name.startswith("mcp__") and not policy.allow_web:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用外部 MCP 服务调用。")
+        if tool_name == "computer_use" and not policy.allow_web:
+            return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用联网操作。")
         rule = policy.capability_rules.get(assessment.category)
         if rule == "deny":
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="该能力已被用户关闭。")

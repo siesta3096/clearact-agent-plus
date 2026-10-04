@@ -193,3 +193,32 @@ def test_fetch_rejects_reader_proxied_not_found_page_and_falls_back(monkeypatch,
     assert result.metadata["extractor"] == "readability"
     assert "Page not found" not in result.content
     assert "Cortex-A53" in result.content
+
+
+def test_direct_fetch_rejects_error_page_with_http_200(monkeypatch):
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        text = "<html><title>Page not found</title><body>We could not find the page you requested.</body></html>"
+        url = "https://example.com/missing"
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def get_page(*_args, **_kwargs):
+        return Response()
+
+    monkeypatch.setattr("clearact.tools.web.httpx.AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr("clearact.tools.web.get_with_safe_redirects", get_page)
+
+    with pytest.raises(ToolValidationError, match="no usable content or is an error page"):
+        asyncio.run(FetchUrlTool()._fetch_readability(
+            "https://example.com/missing", 50_000, "markdown", False, {},
+        ))

@@ -31,7 +31,7 @@ from clearact.tools.filesystem import ListFilesTool, ReadFileTool, ReadPdfTool, 
 from clearact.tools.mcp import MCPManager, MCPTool
 from clearact.tools.registry import ToolRegistry
 from clearact.tools.web import FetchUrlTool, WebSearchTool
-from clearact.tools.workflow import DeclareWorkflowPlanTool, DeclareWorkflowStepTool
+from clearact.tools.workflow import DeclareWorkflowPlanTool, DeclareWorkflowStepTool, ReviseWorkflowPlanTool
 from clearact.ui.console_renderer import ConsoleRenderer
 
 
@@ -163,6 +163,7 @@ async def _run(
     interface_language: str = "zh",
     approval_gate: ApprovalGate | None = None,
     render_console: bool = True,
+    computer_use_manager=None,
 ) -> None:
     project_root = _project_root()
     _load_dotenv(project_root)
@@ -187,6 +188,7 @@ async def _run(
     for tool in (
         DeclareWorkflowPlanTool(),
         DeclareWorkflowStepTool(),
+        ReviseWorkflowPlanTool(),
         ListFilesTool(),
         ReadFileTool(),
         ReadPdfTool(),
@@ -195,6 +197,10 @@ async def _run(
         FetchUrlTool(),
     ):
         registry.register(tool)
+    if computer_use_manager is not None:
+        from clearact.tools.computer_use import ComputerUseTool
+
+        registry.register(ComputerUseTool())
     # MCP tools are discovered concurrently at run start, then become ordinary registry tools.
     # They therefore use the same model loop, timeout, risk assessment, approval, event and audit paths.
     mcp_manager = MCPManager(settings.mcp_servers, allow_localhost=settings.network.allow_localhost)
@@ -214,6 +220,12 @@ async def _run(
                 ChatMessage(role="user", content=goal),
             ],
         )
+
+    async def resolve_computer_session():
+        if computer_use_manager is None:
+            return None
+        return computer_use_manager.get_for_run(run.id)
+
     runner = AgentRunner(
         provider=provider,
         registry=registry,
@@ -230,6 +242,10 @@ async def _run(
             SnapshotStore(settings.data_root, workspace_root),
             autonomy=(run.policy.autonomy_threshold.value if run else (autonomy or settings.default_autonomy.value)),
             allow_localhost=settings.network.allow_localhost,
+            computer_session_resolver=(resolve_computer_session if computer_use_manager is not None else None),
+            computer_use_available=(
+                computer_use_manager.has_run if computer_use_manager is not None else None
+            ),
         ),
         stage_mapper=StageMapper(settings.tools),
         max_iterations=max_iterations or settings.agent.max_iterations,

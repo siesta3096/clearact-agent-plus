@@ -12,6 +12,10 @@ class SnapshotStore:
         self._workspace_root = workspace_root.resolve() if workspace_root else None
         self._root.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def workspace_root(self) -> Path | None:
+        return self._workspace_root
+
     def save_before_write(self, path: Path, content: str | None, existed: bool) -> str:
         snapshot_id = f"snapshot_{uuid4().hex[:12]}"
         content_path = self._root / f"{snapshot_id}.txt"

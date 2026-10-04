@@ -10,6 +10,13 @@ let pendingFiles = [];
 let viewEpoch = 0;
 let sending = false;
 let gatewayConnected = true;
+let browserSessionId = null;
+let browserPreviewTimer = null;
+let browserActionQueue = Promise.resolve();
+let browserViewportSize = "";
+let browserViewportResizeFrame = 0;
+let browserVisualRevision = null;
+let browserSessionRequestSequence = 0;
 const runEtags = new Map();
 const openStepDetails = new Set();
 let appearance = localStorage.getItem("clearact-appearance") || "sun";
@@ -204,6 +211,10 @@ const text = {
   zh: {newTopic:"新建话题",history:"过往话题",settings:"设置",settingsHint:"权限、模型与扩展",guide:"使用指南",guideHint:"第一次使用先看这里",welcomeTitle:"把目标告诉我，剩下的交给 ClearAct",welcomeHint:"你不需要先选择工具。直接描述想完成的事情，我会根据任务自动使用文件、网页和已接入的 MCP 能力。",exampleFiles:"处理本地文件",exampleFilesHint:"选择文件夹后读取、分析或生成文件",exampleMcp:"接入新能力",exampleMcpHint:"选择连接方式，ClearAct 完成配置",openGuide:"查看完整使用指南",guideStep1:"先描述目标",guideStep1Text:"在底部输入框用自然语言说清楚要完成什么。",guideStep2:"观察与调整",guideStep2Text:"任务会先被拆成贴合目标的阶段，再逐步显现。展开阶段可检查过程，也可带着反馈从这里重新执行。",guideStep3:"接入新的能力",guideStep3Text:"在设置中选择远程 URL 或本地命令，填写服务商给出的信息，ClearAct 会保存并测试连接。",mcpRegistryHint:"官方服务注册表",mcpOfficialHint:"官方参考服务",mcpSmitheryHint:"社区 MCP 目录",mcpGlamaHint:"社区 MCP 目录",mcpSourceNote:"第三方服务并非天然可信，请核对发布者和所需权限。",guidePermissionTitle:"权限怎么选？",guidePermissionText:"默认“日常”会自动完成读取和工作区文件修改；外部写入、工作区外写入及破坏性操作仍会先询问。",gotIt:"知道了",connected:"本地网关已连接",placeholder:"告诉 ClearAct 你希望完成什么…",attach:"添加文件或图片",uploading:"正在上传附件…",attachmentGoal:"请处理我上传的附件",workspace:"工作区",workspaceChanged:"工作区已切换",send:"发送",stop:"停止运行",language:"界面语言",maxIterations:"最大迭代",maxTools:"最大工具调用",defaultProfile:"默认 Profile",save:"保存配置",cancel:"取消",confirm:"确定",rename:"重命名",delete:"删除",user:"你",running:"运行中",completed:"已完成",failed:"失败",cancelled:"已停止",created:"准备中",waiting_approval:"等待确认",reasoning:"模型公开说明",reasoningHint:"这里仅展示模型/API 明确返回的公开内容，不尝试还原隐藏思维链。",feedbackHint:"说明你希望怎样调整；将保留此前已完成阶段",restart:"从此阶段重新执行",searches:"检索记录",pages:"已访问网页",files:"文件操作",noSources:"尚无可打开的来源。",success:"成功",denied:"被策略阻止",failedAction:"操作失败",approvalTitle:"确认操作",approveAction:"允许",denyAction:"拒绝"},
   en: {newTopic:"New topic",history:"History",settings:"Settings",settingsHint:"Permissions, models & extensions",guide:"User guide",guideHint:"Start here",welcomeTitle:"Tell me the goal. ClearAct handles the rest.",welcomeHint:"Describe the outcome and ClearAct will use files, web research, and connected MCP capabilities as needed.",exampleFiles:"Work with files",exampleFilesHint:"Choose a folder, then read, analyze, or create files",exampleMcp:"Connect a capability",exampleMcpHint:"Choose a connection and ClearAct configures it",openGuide:"Open guide",guideStep1:"Describe the goal",guideStep1Text:"Use natural language in the composer.",guideStep2:"Observe and adjust",guideStep2Text:"The task is split into specific phases that appear as work begins. Inspect or restart any phase with feedback.",guideStep3:"Connect capabilities",guideStep3Text:"Choose a remote URL or local command in Settings; ClearAct saves and tests it.",mcpRegistryHint:"Official registry",mcpOfficialHint:"Official reference servers",mcpSmitheryHint:"Community MCP directory",mcpGlamaHint:"Community MCP directory",mcpSourceNote:"Verify third-party publishers and requested permissions.",guidePermissionTitle:"Which permissions?",guidePermissionText:"Balanced mode automates reads and workspace edits while asking before external writes and destructive work.",gotIt:"Got it",connected:"Local gateway connected",placeholder:"Tell ClearAct what to do…",attach:"Add files or images",uploading:"Uploading attachments…",attachmentGoal:"Please process the attached files",workspace:"Workspace",workspaceChanged:"Workspace changed",send:"Send",stop:"Stop",language:"Language",maxIterations:"Max iterations",maxTools:"Max tool calls",defaultProfile:"Default profile",save:"Save",cancel:"Cancel",confirm:"Confirm",rename:"Rename",delete:"Delete",user:"You",running:"Running",completed:"Completed",failed:"Failed",cancelled:"Stopped",created:"Ready",waiting_approval:"Awaiting approval",reasoning:"Model explanation",reasoningHint:"Only explicit model/API output is shown; hidden chain-of-thought is not reconstructed.",feedbackHint:"Describe the change; completed earlier phases will be reused",restart:"Restart from this phase",searches:"Searches",pages:"Visited pages",files:"File operations",noSources:"No sources yet.",success:"Succeeded",denied:"Blocked by policy",failedAction:"Failed",approvalTitle:"Approve action",approveAction:"Allow",denyAction:"Deny"}
 };
+Object.assign(text.zh, {browserPanel:"Agent 浏览器",browserHint:"启动后，这里会显示 Agent 使用的页面",browserAddress:"输入网址并回车",browserGo:"前往",browserClose:"关闭浏览器",browserBack:"后退",browserReload:"刷新",browserReady:"浏览器已就绪",browserEmptyHint:"直接告诉 ClearAct 要查看或操作哪个网页",browserShared:"与 Agent 共用此会话 · 可直接点击页面；操作会实时同步"});
+Object.assign(text.en, {browserPanel:"Agent browser",browserHint:"The page used by the Agent appears here",browserAddress:"Enter a web address and press Enter",browserGo:"Go",browserClose:"Close browser",browserBack:"Back",browserReload:"Reload",browserReady:"Browser is ready",browserEmptyHint:"Tell ClearAct which page to inspect or operate",browserShared:"Shared with the Agent · Click or type here to sync live"});
+Object.assign(text.zh, {needs_review:"需核对"});
+Object.assign(text.en, {needs_review:"Needs review"});
 
 const t = (key) => text[language]?.[key] || key;
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
@@ -225,6 +236,109 @@ async function fetchGateway(url, options) {
   }
 }
 async function json(url, options) { const response = await fetchGateway(url, options); const body = response.status === 204 ? null : await response.json(); if (!response.ok) throw new Error(body?.detail || "Request failed"); return body; }
+function setBrowserPanelOpen(open) {
+  $("#browser-panel").classList.toggle("hidden", !open);
+  $(".shell").classList.toggle("browser-open", open);
+  $("#browser-toggle").setAttribute("aria-pressed", String(open));
+  $("#browser-toggle-label").textContent = open ? t("browserClose") : t("browserPanel");
+}
+function paintBrowserState(state, refreshImage = false) {
+  if (document.activeElement !== $("#browser-address-input")) $("#browser-address-input").value = state.url && state.url !== "about:blank" ? state.url : "";
+  $("#browser-status").textContent = state.title && state.title !== "" ? `${state.title} · ${state.url}` : t("browserReady");
+  $("#browser-screen").classList.toggle("has-page", Boolean(state.url && state.url !== "about:blank"));
+  const revision = state.revision == null ? null : `${state.url}|${state.revision}`;
+  if (refreshImage || revision === null || revision !== browserVisualRevision) {
+    if (revision !== null) browserVisualRevision = revision;
+    $("#browser-preview").src = `/api/computer-use/sessions/${encodeURIComponent(browserSessionId)}/screenshot?t=${Date.now()}`;
+  }
+}
+async function refreshBrowserPreview() {
+  if (!browserSessionId || $("#browser-panel").classList.contains("hidden")) return;
+  try { paintBrowserState(await json(`/api/computer-use/sessions/${encodeURIComponent(browserSessionId)}`)); }
+  catch (error) { $("#browser-feedback").textContent = error.message; }
+}
+async function restoreBrowserPanel() {
+  const savedId = sessionStorage.getItem("clearact-browser-session");
+  if (!savedId) return;
+  browserSessionId = savedId;
+  try {
+    setBrowserPanelOpen(true);
+    browserVisualRevision = null;
+    paintBrowserState(await json(`/api/computer-use/sessions/${encodeURIComponent(savedId)}`));
+    browserViewportSize = "";
+    scheduleBrowserViewportSync();
+    browserPreviewTimer = setInterval(refreshBrowserPreview, 1100);
+  } catch {
+    browserSessionId = null;
+    sessionStorage.removeItem("clearact-browser-session");
+    setBrowserPanelOpen(false);
+  }
+}
+async function browserControl(payload) {
+  if (!browserSessionId) return;
+  try {
+    const state = await json(`/api/computer-use/sessions/${encodeURIComponent(browserSessionId)}/control`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    $("#browser-feedback").textContent = "";
+    paintBrowserState(state, payload.action === "resize");
+  } catch (error) { $("#browser-feedback").textContent = error.message; }
+}
+function queueBrowserControl(payload) {
+  browserActionQueue = browserActionQueue.then(() => browserControl(payload));
+  return browserActionQueue;
+}
+function scheduleBrowserViewportSync() {
+  cancelAnimationFrame(browserViewportResizeFrame);
+  browserViewportResizeFrame = requestAnimationFrame(() => {
+    const screen = $("#browser-screen");
+    if (!browserSessionId || $("#browser-panel").classList.contains("hidden") || !screen.clientWidth || !screen.clientHeight) return;
+    const width = Math.max(1280, Math.min(1920, Math.round(screen.clientWidth * (window.devicePixelRatio || 1))));
+    const height = Math.max(700, Math.min(1800, Math.round(width * screen.clientHeight / screen.clientWidth)));
+    const size = `${width}x${height}`;
+    if (size === browserViewportSize) return;
+    browserViewportSize = size;
+    queueBrowserControl({action:"resize", width, height});
+  });
+}
+if ("ResizeObserver" in window) new ResizeObserver(scheduleBrowserViewportSync).observe($("#browser-screen"));
+window.addEventListener("resize", scheduleBrowserViewportSync);
+async function toggleBrowser() {
+  if (!$("#browser-panel").classList.contains("hidden")) { await closeBrowser(); return; }
+  const requestSequence = ++browserSessionRequestSequence;
+  const button = $("#browser-toggle");
+  button.disabled = true; button.setAttribute("aria-busy", "true");
+  setBrowserPanelOpen(true);
+  $("#browser-status").textContent = language === "zh" ? "正在启动隔离浏览器…" : "Starting isolated browser…";
+  $("#browser-feedback").textContent = language === "zh" ? "正在启动隔离浏览器…" : "Starting isolated browser…";
+  try {
+    const session = await json("/api/computer-use/sessions", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:activeId})});
+    if (requestSequence !== browserSessionRequestSequence) {
+      await json(`/api/computer-use/sessions/${encodeURIComponent(session.id)}`, {method:"DELETE"}).catch(() => {});
+      return;
+    }
+    browserSessionId = session.id;
+    browserViewportSize = "";
+    browserVisualRevision = null;
+    sessionStorage.setItem("clearact-browser-session", browserSessionId);
+    setBrowserPanelOpen(true);
+    scheduleBrowserViewportSync();
+    $("#browser-feedback").textContent = "";
+    paintBrowserState(session);
+    clearInterval(browserPreviewTimer);
+    browserPreviewTimer = setInterval(refreshBrowserPreview, 1100);
+  } catch (error) { if (requestSequence === browserSessionRequestSequence) $("#browser-feedback").textContent = error.message; }
+  finally { button.disabled = false; button.removeAttribute("aria-busy"); }
+}
+async function closeBrowser() {
+  browserSessionRequestSequence++;
+  clearInterval(browserPreviewTimer); browserPreviewTimer = null;
+  const id = browserSessionId; browserSessionId = null;
+  browserViewportSize = "";
+  sessionStorage.removeItem("clearact-browser-session");
+  setBrowserPanelOpen(false);
+  $("#browser-preview").removeAttribute("src");
+  $("#browser-address-input").value = "";
+  if (id) { try { await json(`/api/computer-use/sessions/${encodeURIComponent(id)}`, {method:"DELETE"}); } catch { /* A session may expire when the local gateway restarts. */ } }
+}
 async function requestRunDetail(id, conditional = false) {
   const headers = {};
   if (conditional && runEtags.has(id)) headers["If-None-Match"] = runEtags.get(id);
@@ -235,7 +349,7 @@ async function requestRunDetail(id, conditional = false) {
   return {detail:body, etag:response.headers.get("ETag")};
 }
 function rememberRunEtag(id, etag) { if (etag) runEtags.set(id, etag); else runEtags.delete(id); }
-function applyLanguage() { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; document.querySelectorAll("[data-i18n]").forEach((node) => node.textContent = t(node.dataset.i18n)); document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.placeholder = t(node.dataset.i18nPlaceholder)); document.querySelectorAll("[data-i18n-title]").forEach((node) => node.title = t(node.dataset.i18nTitle)); setGatewayConnected(gatewayConnected); renderAppearance(); }
+function applyLanguage() { document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; document.querySelectorAll("[data-i18n]").forEach((node) => node.textContent = t(node.dataset.i18n)); document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => node.placeholder = t(node.dataset.i18nPlaceholder)); document.querySelectorAll("[data-i18n-title]").forEach((node) => node.title = t(node.dataset.i18nTitle)); setBrowserPanelOpen(!$("#browser-panel").classList.contains("hidden")); if (!browserSessionId) $("#browser-status").textContent = t("browserHint"); setGatewayConnected(gatewayConnected); renderAppearance(); }
 function setWorkspace(path) { const effective = path || config?.default_workdir || ""; selectedWorkdir = effective || null; $("#workspace-path").textContent = effective; $("#workspace-indicator").title = effective ? `${t("workspace")}: ${effective}` : t("workspace"); }
 function readableSize(bytes) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1048576).toFixed(1)} MB`; }
 function renderPendingFiles() { const root = $("#attachment-list"); root.replaceChildren(); pendingFiles.forEach((file,index) => { const chip = document.createElement("span"); chip.className = "attachment-chip"; const label = document.createElement("span"); label.textContent = `${file.type.startsWith("image/") ? "🖼" : "📄"} ${file.name} · ${readableSize(file.size)}`; const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "×"; remove.onclick = () => { pendingFiles.splice(index,1); renderPendingFiles(); }; chip.append(label,remove); root.appendChild(chip); }); root.classList.toggle("hidden", !pendingFiles.length); }
@@ -247,7 +361,7 @@ async function loadConfig() { config = await json("/api/config"); language = con
 async function loadRuns() {
   const runs = await json("/api/runs");
   $("#run-count").textContent = runs.length;
-  $("#runs").innerHTML = runs.length ? runs.map((run) => `<div class="topic-row"><button class="topic ${run.id === activeId ? "active" : ""}" data-id="${escape(run.id)}" title="${escape(run.title)}"><div class="topic-goal">${escape(run.title)}</div><div class="topic-meta"><span>${new Date(run.updated_at).toLocaleDateString()}</span><span class="badge status-${escape(run.status)}">${t(run.status)}</span></div></button><button class="topic-menu" data-id="${escape(run.id)}">⋯</button></div>`).join("") : `<p class="muted">${language === "zh" ? "尚无过往话题。" : "No topics yet."}</p>`;
+  $("#runs").innerHTML = runs.length ? runs.map((run) => { const visibleStatus = run.needs_review ? "needs_review" : run.status; return `<div class="topic-row"><button class="topic ${run.id === activeId ? "active" : ""}" data-id="${escape(run.id)}" title="${escape(run.title)}"><div class="topic-goal">${escape(run.title)}</div><div class="topic-meta"><span>${new Date(run.updated_at).toLocaleDateString()}</span><span class="badge status-${escape(visibleStatus)}">${t(visibleStatus)}</span></div></button><button class="topic-menu" data-id="${escape(run.id)}">⋯</button></div>`; }).join("") : `<p class="muted">${language === "zh" ? "尚无过往话题。" : "No topics yet."}</p>`;
   document.querySelectorAll(".topic").forEach((node) => node.onclick = () => showRun(node.dataset.id));
   document.querySelectorAll(".topic-menu").forEach((node) => node.onclick = () => { const run = runs.find((item) => item.id === node.dataset.id); openTopicMenu(run.id, run.title); });
 }
@@ -258,17 +372,21 @@ function markdown(value) {
   return `<p>${output}</p>`;
 }
 function resultMap(detail) { return new Map(detail.run.messages.filter((message) => message.role === "tool" && message.tool_call_id).map((message) => [message.tool_call_id, message])); }
+function latestTurnFinal(run) {
+  const boundary = run.messages.findLastIndex((message) => message.role === "user");
+  return [...run.messages.slice(boundary + 1)].reverse().find((message) => message.role === "assistant" && !message.tool_calls?.length);
+}
 function workflowData(detail) {
   const calls = [];
-  detail.run.messages.forEach((message, messageIndex) => message.tool_calls?.filter((action) => !["declare_workflow_plan", "declare_workflow_step"].includes(action.tool_name)).forEach((action) => calls.push({...action, messageIndex})));
+  detail.run.messages.forEach((message, messageIndex) => message.tool_calls?.filter((action) => !["declare_workflow_plan", "declare_workflow_step", "revise_workflow_plan"].includes(action.tool_name)).forEach((action) => calls.push({...action, messageIndex})));
   return {steps: detail.run.workflow_steps || [], calls};
 }
-function actionStatus(result) { const status = result?.metadata?.status; if (status === "succeeded") return t("success"); if (status === "skipped") { const labels = language === "zh" ? {search_streak:"先查看已有来源",search_budget:"已达检索预算",local_first:"先读本地资料",local_only:"按要求离线"} : {search_streak:"Open a source first",search_budget:"Search budget reached",local_first:"Read local files first",local_only:"Offline as requested"}; return labels[result.metadata.reason] || (language === "zh" ? "已复用已有结果" : "Reused earlier result"); } if (status === "denied") return t("denied"); if (["failed","cancelled"].includes(status)) return `${t("failedAction")}：${escape(result?.metadata?.error || result?.content || "")}`; return language === "zh" ? "进行中" : "In progress"; }
+function actionStatus(result) { const status = result?.metadata?.status; if (status === "succeeded") return t("success"); if (status === "skipped") { const labels = language === "zh" ? {search_streak:"先查看已有来源",search_budget:"已达检索预算",search_unavailable:"搜索服务暂不可用",failed_read:"重复读取已跳过",failed_fetch:"此前打开失败",local_first:"先读本地资料",local_only:"按要求离线"} : {search_streak:"Open a source first",search_budget:"Search budget reached",search_unavailable:"Search unavailable",failed_read:"Repeated read skipped",failed_fetch:"Earlier fetch failed",local_first:"Read local files first",local_only:"Offline as requested"}; return labels[result.metadata.reason] || (language === "zh" ? "已复用已有结果" : "Reused earlier result"); } if (status === "denied") return t("denied"); if (["failed","cancelled"].includes(status)) return `${t("failedAction")}：${escape(result?.metadata?.error || result?.content || "")}`; return language === "zh" ? "进行中" : "In progress"; }
 function guardNote(result) {
   if (result?.metadata?.status !== "skipped") return "";
   const notes = language === "zh"
-    ? {search_streak:"已检索多次，请先核对已有网页来源。",search_budget:"这个任务的网页检索预算已用完，可基于现有资料完成或在反馈中要求扩大调查。",local_first:"请先读取附件或工作区文件。",local_only:"你要求仅使用本地资料，网页操作已跳过。"}
-    : {search_streak:"Open a found source before searching again.",search_budget:"This task's search budget is spent. Continue from existing evidence or request broader research.",local_first:"Read the attachment or workspace files first.",local_only:"Web actions were skipped because you requested local-only work."};
+    ? {search_streak:"已检索多次，请先核对已有网页来源。",search_budget:"这个任务的网页检索预算已用完，可基于现有资料完成或在反馈中要求扩大调查。",search_unavailable:"搜索服务暂不可用，请使用已有资料或直接打开已知网址。",failed_read:"同一文件和参数的读取此前已失败；请修正路径、调整参数，或使用其他资料。",failed_fetch:"这个网址此前打开失败，本轮不再重复请求；可换用其他来源。",local_first:"请先读取附件或工作区文件。",local_only:"你要求仅使用本地资料，网页操作已跳过。"}
+    : {search_streak:"Open a found source before searching again.",search_budget:"This task's search budget is spent. Continue from existing evidence or request broader research.",search_unavailable:"Search providers are unavailable. Use existing evidence or open a known URL directly.",failed_read:"The same file read already failed. Correct the path or options, or use another source.",failed_fetch:"This URL already failed to open in this turn; try another source.",local_first:"Read the attachment or workspace files first.",local_only:"Web actions were skipped because you requested local-only work."};
   return notes[result.metadata.reason] || (language === "zh" ? "相同或相近的操作已完成，已复用原结果。" : "An equivalent action was already completed.");
 }
 function formatDuration(seconds) {
@@ -284,10 +402,11 @@ function runUsageHtml(detail) {
   const strategy = run.research_strategy;
   const modes = language === "zh" ? {local_only:"仅本地",local_first:"本地优先",mixed:"本地＋联网",research:"深入调查",balanced:"平衡"} : {local_only:"Local only",local_first:"Local first",mixed:"Local + web",research:"Research",balanced:"Balanced"};
   const lastUserIndex = run.messages.findLastIndex((message) => message.role === "user");
-  const toolMessages = run.messages.slice(lastUserIndex + 1).filter((message) => message.role === "tool" && !["declare_workflow_plan","declare_workflow_step"].includes(message.name));
+  const toolMessages = run.messages.slice(lastUserIndex + 1).filter((message) => message.role === "tool" && !["declare_workflow_plan","declare_workflow_step","revise_workflow_plan"].includes(message.name));
   const executed = toolMessages.filter((message) => ["succeeded","failed"].includes(message.metadata?.status));
   const skipped = toolMessages.filter((message) => message.metadata?.status === "skipped").length;
-  const searches = executed.filter((message) => message.name === "web_search").length;
+  const searches = executed.filter((message) => message.name === "web_search" && message.metadata?.status === "succeeded").length;
+  const failedSearches = executed.filter((message) => message.name === "web_search" && message.metadata?.status === "failed").length;
   const events = detail.events || [];
   const started = run.status === "created" ? run.updated_at : [...events].reverse().find((event) => event.type === "run.started")?.timestamp || run.created_at;
   const completed = [...events].reverse().find((event) => event.type === "run.completed")?.timestamp;
@@ -296,7 +415,7 @@ function runUsageHtml(detail) {
   const completedMs = Date.parse(completed);
   const endMs = active ? Date.now() : (Number.isFinite(completedMs) && completedMs >= startMs ? completedMs : Date.parse(run.updated_at));
   const duration = Number.isFinite(startMs) && Number.isFinite(endMs) ? formatDuration((endMs - startMs) / 1000) : "—";
-  return `<aside class="run-usage" aria-label="${language === "zh" ? "任务用量" : "Task usage"}"><b>${language === "zh" ? "本次任务" : "This task"}</b>${strategy ? `<span>${language === "zh" ? "资料策略" : "Evidence"} <strong>${escape(modes[strategy.mode] || strategy.mode)}</strong></span>` : ""}<span>${language === "zh" ? "用时" : "Elapsed"} <strong id="run-elapsed" data-start="${Number.isFinite(startMs) ? startMs : ""}" data-active="${active ? "1" : "0"}">${duration}</strong></span><span>${language === "zh" ? "工具调用" : "Tool calls"} <strong>${executed.length}</strong></span><span>${language === "zh" ? "网页搜索" : "Web searches"} <strong>${searches}${strategy?.total_search_limit != null ? `/${strategy.total_search_limit}` : ""}</strong></span>${skipped ? `<span>${language === "zh" ? "已跳过" : "Skipped"} <strong>${skipped}</strong></span>` : ""}</aside>`;
+  return `<aside class="run-usage" aria-label="${language === "zh" ? "任务用量" : "Task usage"}"><b>${language === "zh" ? "本次任务" : "This task"}</b>${strategy ? `<span>${language === "zh" ? "资料策略" : "Evidence"} <strong>${escape(modes[strategy.mode] || strategy.mode)}</strong></span>` : ""}<span>${language === "zh" ? "用时" : "Elapsed"} <strong id="run-elapsed" data-start="${Number.isFinite(startMs) ? startMs : ""}" data-active="${active ? "1" : "0"}">${duration}</strong></span><span>${language === "zh" ? "工具调用" : "Tool calls"} <strong>${executed.length}</strong></span><span>${language === "zh" ? "成功检索" : "Successful searches"} <strong>${searches}${strategy?.total_search_limit != null ? `/${strategy.total_search_limit}` : ""}</strong></span>${failedSearches ? `<span>${language === "zh" ? "检索失败" : "Failed searches"} <strong>${failedSearches}</strong></span>` : ""}${skipped ? `<span>${language === "zh" ? "已跳过" : "Skipped"} <strong>${skipped}</strong></span>` : ""}</aside>`;
 }
 function refreshRunElapsed() {
   const node = $("#run-elapsed"), startMs = Number(node?.dataset.start);
@@ -329,7 +448,35 @@ function researchLayout(detail, actions) {
 function actionLayout(detail, actions) {
   const results = resultMap(detail), ordinary = actions.filter((action) => !["web_search","fetch_url"].includes(action.tool_name));
   if (!ordinary.length) return "";
-  return `<div class="action-layout"><h4>${t("files")}</h4>${ordinary.map((action) => { const result = results.get(action.id), target = result?.metadata?.path || action.arguments?.path || action.arguments?.url || ""; const preview = result?.metadata?.status === "succeeded" && ["read_file","read_pdf","write_file"].includes(action.tool_name); return `<section class="action-record"><div><b>${escape(action.tool_name.replace(/^mcp__/, ""))}</b><small>${actionStatus(result)}</small></div>${target ? `<p>${escape(target)}</p>` : ""}${preview ? `<button type="button" class="file-preview-trigger" data-preview-action="${escape(action.id)}">${language === "zh" ? (action.tool_name === "write_file" ? "查看改动" : "预览内容") : (action.tool_name === "write_file" ? "View changes" : "Preview")}</button>` : ""}</section>`; }).join("")}</div>`;
+  return `<div class="action-layout"><h4>${language === "zh" ? "操作与文件" : "Actions & files"}</h4>${ordinary.map((action) => {
+    const result = results.get(action.id), target = result?.metadata?.path || action.arguments?.path || action.arguments?.url || "";
+    const succeededPreview = result?.metadata?.status === "succeeded" && ["read_file","read_pdf","write_file"].includes(action.tool_name);
+    const reusedPreview = result?.metadata?.status === "skipped" && ["read_file","read_pdf"].includes(action.tool_name) && result.metadata.reused_from_action_id;
+    const previewId = succeededPreview ? action.id : reusedPreview || null;
+    const previewLabel = reusedPreview ? (language === "zh" ? "查看复用内容" : "View reused content") : language === "zh" ? (action.tool_name === "write_file" ? "查看改动" : "预览内容") : (action.tool_name === "write_file" ? "View changes" : "Preview");
+    return `<section class="action-record"><div><b>${escape(action.tool_name.replace(/^mcp__/, ""))}</b><small>${actionStatus(result)}</small></div>${target ? `<p>${escape(target)}</p>` : ""}${previewId ? `<button type="button" class="file-preview-trigger" data-preview-action="${escape(previewId)}">${previewLabel}</button>` : ""}</section>`;
+  }).join("")}</div>`;
+}
+function stepTraceHtml(detail, actions) {
+  if (!actions.length) return "";
+  const results = resultMap(detail), events = detail.events || [];
+  const labels = language === "zh" ? {succeeded:"成功", failed:"失败", skipped:"已跳过", denied:"未执行", cancelled:"已取消"} : {succeeded:"Succeeded", failed:"Failed", skipped:"Skipped", denied:"Not run", cancelled:"Cancelled"};
+  return `<details class="step-trace"><summary>${language === "zh" ? "执行记录与权限依据" : "Execution log & permissions"}<span>${actions.length}</span></summary><div class="step-trace-list">${actions.map((action) => {
+    const result = results.get(action.id);
+    const started = events.find((event) => event.action_id === action.id && event.type === "action.started");
+    const approval = events.find((event) => event.action_id === action.id && event.type === "approval.required");
+    const notRun = events.find((event) => event.action_id === action.id && ["action.skipped","action.denied"].includes(event.type));
+    const time = started?.timestamp || notRun?.timestamp || approval?.timestamp;
+    const risk = started?.risk || notRun?.risk || approval?.risk;
+    const decision = started?.data?.policy_outcome;
+    const policy = decision === "allow" ? (language === "zh" ? "自动执行" : "Automatic") : decision === "require_approval" ? (language === "zh" ? "用户已确认" : "User approved") : notRun?.type === "action.denied" ? (language === "zh" ? "未获授权" : "Not authorized") : notRun?.type === "action.skipped" ? (language === "zh" ? "运行时跳过" : "Skipped by runtime") : approval ? (language === "zh" ? "等待确认" : "Approval pending") : "";
+    const notRunReason = notRun?.detail === "user_declined" ? (language === "zh" ? "用户拒绝了此操作。" : "The user declined this action.") : notRun?.detail;
+    const reason = started?.data?.policy_reason || (notRun?.type === "action.skipped" ? guardNote(result) : notRunReason) || approval?.detail || (result?.metadata?.status === "skipped" ? guardNote(result) : result?.metadata?.reason || "");
+    const outcome = labels[result?.metadata?.status] || (language === "zh" ? "进行中" : "In progress");
+    const content = (result?.content || "").trim(), excerpt = content.slice(0, 1800);
+    const target = action.arguments?.path || action.arguments?.url || action.arguments?.query || "";
+    return `<article class="trace-entry"><div class="trace-heading"><b>${escape(action.tool_name.replace(/^mcp__/, ""))}</b><span>${outcome}</span></div>${target ? `<p class="trace-target">${escape(String(target).slice(0, 240))}</p>` : ""}<p class="trace-meta">${time ? escape(new Date(time).toLocaleString(language === "zh" ? "zh-CN" : "en-US")) : ""}${risk ? ` · ${language === "zh" ? "风险" : "Risk"} ${escape(risk)}` : ""}${policy ? ` · ${policy}` : ""}</p>${reason ? `<p class="trace-reason">${escape(reason)}</p>` : ""}${content ? `<details class="trace-result"><summary>${language === "zh" ? "查看工具返回" : "View tool output"}</summary><pre>${escape(excerpt)}${content.length > excerpt.length ? "\n…" : ""}</pre></details>` : ""}</article>`;
+  }).join("")}</div></details>`;
 }
 async function openFilePreview(actionId) {
   if (!activeId) return;
@@ -341,15 +488,36 @@ async function openFilePreview(actionId) {
   try {
     const result = await json(`/api/runs/${encodeURIComponent(activeId)}/actions/${encodeURIComponent(actionId)}/preview`);
     $("#file-preview-title").textContent = result.kind === "diff" ? (language === "zh" ? "文件改动" : "File changes") : (language === "zh" ? "文件预览" : "File preview");
-    $("#file-preview-path").textContent = result.path + (result.truncated ? (language === "zh" ? " · 仅显示前 12 万字符" : " · first 120,000 characters") : "");
+    const sourceWarning = result.source_state === "unstable"
+      ? (language === "zh" ? " · 读取前后文件已变化；内容可能不一致，请重新读取" : " · File changed around the read; content may be inconsistent, please read again")
+      : result.source_state === "changed"
+      ? (language === "zh" ? " · 文件版本已变化；以下是当时读取的记录" : " · File version changed; showing the recorded read")
+      : result.source_state === "unverified"
+      ? (language === "zh" ? " · 旧记录无法核验文件版本" : " · File version could not be verified") : "";
+    const outsideWarning = result.outside_workspace ? (language === "zh" ? " · 工作区外文件；回溯不会自动恢复" : " · Outside workspace; rewind will not restore automatically") : "";
+    $("#file-preview-path").textContent = result.path + outsideWarning + sourceWarning + (result.truncated ? (language === "zh" ? " · 仅显示前 12 万字符" : " · first 120,000 characters") : "");
     $("#file-preview-content").textContent = result.content || (language === "zh" ? "（没有文本内容）" : "(No text content)");
     $("#file-preview-content").classList.toggle("diff-content", result.kind === "diff");
   } catch (error) { $("#file-preview-content").textContent = error.message; }
 }
 function planHtml(run) {
-  if (!run.workflow_plan?.length) return `<div class="plan-loading"><i></i>${language === "zh" ? "正在生成与任务匹配的步骤…" : "Creating a task-specific plan…"}</div>`;
+  if (!run.workflow_plan?.length) {
+    const unavailable = language === "zh"
+      ? {failed:"未能生成任务步骤，请检查模型的工具调用配置。", cancelled:"任务已停止，未生成步骤。", completed:"这段对话没有步骤记录。"}
+      : {failed:"No task plan was created. Check the model's tool-calling setup.", cancelled:"The task stopped before a plan was created.", completed:"No step record is available for this conversation."};
+    if (unavailable[run.status]) return `<p class="plan-unavailable">${unavailable[run.status]}</p>`;
+    return `<div class="plan-loading"><i></i>${language === "zh" ? "正在生成与任务匹配的步骤…" : "Creating a task-specific plan…"}</div>`;
+  }
   const reached = new Set((run.workflow_steps || []).map((step) => step.plan_item_id));
-  return `<ol class="workflow-plan">${run.workflow_plan.map((item) => `<li class="${reached.has(item.id) ? "reached" : ""}"><span></span><div><b>${escape(item.title)}</b><p>${escape(item.summary)}</p></div></li>`).join("")}</ol>`;
+  const revisions = (run.messages || []).filter((message) => message.role === "tool" && message.name === "revise_workflow_plan" && message.metadata?.status === "succeeded");
+  const blockedRevisions = (run.messages || []).filter((message) => message.role === "tool" && message.name === "revise_workflow_plan" && message.metadata?.reason === "no_new_result").length;
+  const latest = revisions.at(-1)?.metadata;
+  const phaseTitles = (value) => (Array.isArray(value) ? value : []).map((title) => escape(title)).join(" → ");
+  const update = latest ? `<details class="plan-update"><summary><span>${language === "zh" ? `计划已调整 ${revisions.length} 次：` : `Plan revised ${revisions.length} time(s): `}${escape(latest.reason || "")}</span><b>${language === "zh" ? "查看调整历史" : "View revision history"}</b></summary><ol class="plan-update-history">${revisions.map((message, index) => {
+    const revision = message.metadata;
+    return `<li><strong>${language === "zh" ? `第 ${index + 1} 次调整` : `Revision ${index + 1}`}</strong><p>${escape(revision.reason || "")}</p>${revision.replaced?.length ? `<small>${language === "zh" ? "替换原后续：" : "Replaced upcoming: "}${phaseTitles(revision.replaced)}</small>` : ""}${revision.future?.length ? `<small>${language === "zh" ? "调整为：" : "Changed to: "}${phaseTitles(revision.future)}</small>` : ""}</li>`;
+  }).join("")}</ol>${blockedRevisions ? `<p class="plan-update-guard">${language === "zh" ? `另有 ${blockedRevisions} 次无新结果的重复调整已跳过。` : `${blockedRevisions} repeated revision(s) without new results were skipped.`}</p>` : ""}</details>` : "";
+  return `${update}<ol class="workflow-plan">${run.workflow_plan.map((item) => `<li class="${reached.has(item.id) ? "reached" : ""}"><span></span><div><b>${escape(item.title)}</b><p>${escape(item.summary)}</p>${item.done_when ? `<p class="plan-criterion">${language === "zh" ? "完成条件：" : "Done when: "}${escape(item.done_when)}</p>` : ""}</div></li>`).join("")}</ol>`;
 }
 function stepCard(detail, step, calls, index) {
   const actions = (step.action_ids || []).map((id) => calls.find((call) => call.id === id)).filter(Boolean);
@@ -357,12 +525,106 @@ function stepCard(detail, step, calls, index) {
   const specialized = isUnderstand ? planHtml(detail.run) : researchLayout(detail, actions) + actionLayout(detail, actions);
   const canRestart = !["created","running","waiting_approval","paused"].includes(detail.run.status);
   const open = openStepDetails.has(step.id) ? " open" : "";
-  return `<article class="message stage-message" data-step-id="${escape(step.id)}"><div class="stage-rail"><span class="stage-index">${String(index + 1).padStart(2,"0")}</span><i class="stage-dot ${escape(step.status || "completed")}"></i></div><section class="stage-card"><div class="stage-title"><h3>${escape(step.title)}</h3><span class="step-status">${t(step.status || "completed")}</span></div><details class="stage-details"${open}><summary>${escape(step.summary)}<span>${language === "zh" ? "查看详情" : "Details"}</span></summary><div class="stage-expanded">${specialized || `<p class="process-label">${escape(step.summary)}</p>`}${reasoningHtml(detail, step)}${canRestart ? feedbackShortcuts() : ""}<form class="stage-feedback"><textarea placeholder="${escape(t("feedbackHint"))}"></textarea><button class="secondary-button" type="submit" ${canRestart ? "" : "disabled"}>${t("restart")}</button></form></div></details></section></article>`;
+  return `<article class="message stage-message" data-step-id="${escape(step.id)}"><div class="stage-rail"><span class="stage-index">${String(index + 1).padStart(2,"0")}</span><i class="stage-dot ${escape(step.status || "completed")}"></i></div><section class="stage-card"><div class="stage-title"><h3>${escape(step.title)}</h3><span class="step-status">${t(step.status || "completed")}</span></div><details class="stage-details"${open}><summary>${escape(step.summary)}<span>${language === "zh" ? "查看详情" : "Details"}</span></summary><div class="stage-expanded">${specialized || `<p class="process-label">${escape(step.summary)}</p>`}${step.done_when ? `<p class="plan-criterion">${language === "zh" ? "完成条件：" : "Done when: "}${escape(step.done_when)}</p>` : ""}${stepTraceHtml(detail, actions)}${reasoningHtml(detail, step)}${canRestart ? feedbackShortcuts() : ""}<form class="stage-feedback"><textarea placeholder="${escape(t("feedbackHint"))}"></textarea><button class="secondary-button" type="submit" ${canRestart ? "" : "disabled"}>${t("restart")}</button></form></div></details></section></article>`;
 }
-function revisionHtml(run) { const revision = run.workflow_revisions?.at(-1); if (!revision) return ""; const count = revision.reused_step_ids?.length || 0, restored = revision.restored_snapshot_ids?.length || 0, warning = revision.rollback_warnings?.length ? (language === "zh" ? "；部分外部操作无法自动撤销" : "; some external effects could not be undone") : ""; return `<div class="revision-banner">↺ ${language === "zh" ? `已按反馈创建新分支，复用 ${count} 个前置阶段，恢复 ${restored} 个文件快照` : `New branch; reused ${count} phases and restored ${restored} file snapshots`}${warning}<small>${escape(revision.feedback || "")}</small></div>`; }
+function revisionHtml(run) {
+  const revisions = [...(run.workflow_revisions || [])].reverse();
+  if (!revisions.length) return "";
+  return `<section class="revision-history"><h3>${language === "zh" ? "回溯与分支" : "Rewinds & branches"} <span>${revisions.length}</span></h3>${revisions.map((revision, index) => {
+    const title = revision.from_step_title || revision.from_step_id;
+    const reused = revision.reused_step_ids?.length || 0, restored = revision.restored_snapshot_ids?.length || 0;
+    const warnings = revision.rollback_warnings || [];
+    return `<details class="revision-entry"${index === 0 ? " open" : ""}><summary><b>↺ ${escape(title)}</b><small>${escape(new Date(revision.created_at).toLocaleString(language === "zh" ? "zh-CN" : "en-US"))}</small></summary><div class="revision-content"><p>${language === "zh" ? `复用 ${reused} 个前置阶段 · 恢复 ${restored} 个文件快照 · 移出当前分支 ${revision.discarded_message_count || 0} 条消息` : `Reused ${reused} earlier phases · restored ${restored} files · moved ${revision.discarded_message_count || 0} messages out of the active branch`}</p><p class="revision-feedback">${escape(revision.feedback || "")}</p>${warnings.length ? `<ul class="revision-warnings">${warnings.map((warning) => `<li>${escape(warning)}</li>`).join("")}</ul>` : ""}${revision.archive_available ? `<button type="button" class="secondary-button" data-open-revision="${escape(revision.id)}">${language === "zh" ? "查看旧分支执行记录" : "View previous branch"}</button>` : ""}</div></details>`;
+  }).join("")}</section>`;
+}
+async function openRevisionArchive(revision) {
+  if (!activeId) return;
+  const dialog = $("#revision-dialog"), body = $("#revision-dialog-body");
+  $("#revision-dialog-title").textContent = language === "zh" ? `回溯前：${revision.from_step_title || revision.from_step_id}` : `Before rewind: ${revision.from_step_title || revision.from_step_id}`;
+  body.textContent = language === "zh" ? "正在载入旧分支…" : "Loading previous branch…";
+  dialog.showModal();
+  try {
+    const archive = await json(`/api/runs/${encodeURIComponent(activeId)}/revisions/${encodeURIComponent(revision.id)}`);
+    const oldRun = archive.run, calls = oldRun.messages.flatMap((message) => message.tool_calls || []).filter((action) => !["declare_workflow_plan", "declare_workflow_step", "revise_workflow_plan"].includes(action.tool_name));
+    const steps = oldRun.workflow_steps || [], boundary = steps.findIndex((step) => step.id === revision.from_step_id);
+    const final = latestTurnFinal(oldRun);
+    body.innerHTML = `<div class="archive-summary">${language === "zh" ? "这是回溯前保存的只读执行记录。文件状态以当前工作区为准。" : "Read-only execution record from before the rewind. Files reflect the current workspace."}</div>${steps.length ? steps.map((step, index) => {
+      const actions = (step.action_ids || []).map((id) => calls.find((call) => call.id === id)).filter(Boolean);
+      const label = boundary >= 0 && index >= boundary ? (language === "zh" ? "已被新分支替换" : "Replaced by new branch") : (language === "zh" ? "已复用" : "Reused");
+      return `<article class="archive-step"><div class="archive-step-head"><b>${escape(step.title)}</b><span>${label}</span></div><p>${escape(step.summary)}</p>${researchLayout(archive, actions)}${stepTraceHtml(archive, actions)}</article>`;
+    }).join("") : stepTraceHtml(archive, calls)}${final?.content ? `<section class="archive-final"><h3>${language === "zh" ? "当时的答复" : "Previous answer"}</h3>${markdown(final.content)}</section>` : ""}`;
+  } catch (error) { body.textContent = error.message; }
+}
 function attachmentsHtml(message) { const attachments = message?.metadata?.attachments || []; if (!attachments.length) return ""; return `<div class="sent-attachments">${attachments.map((item) => `<span>${item.kind === "image" ? "🖼" : "📄"} <b>${escape(item.name)}</b><small>${escape(item.path)} · ${readableSize(item.size || 0)}</small></span>`).join("")}</div>`; }
-function connectionHtml(detail) { const event = [...(detail.events || [])].reverse().find((item) => ["model.retrying","model.recovered"].includes(item.type)); if (event?.type !== "model.retrying" || !["created","running"].includes(detail.run.status)) return ""; const attempt = event.data?.attempt || 2, total = event.data?.max_attempts || 3; return `<div class="connection-banner"><i></i><div><b>${escape(event.title)}</b><small>${escape(event.detail || "")} · ${language === "zh" ? `第 ${attempt}/${total} 次尝试` : `attempt ${attempt}/${total}`}</small></div></div>`; }
-function deliverCard(detail) { const final = [...detail.run.messages].reverse().find((message) => message.role === "assistant" && !message.tool_calls?.length); if (!final && ["created","running","waiting_approval","paused"].includes(detail.run.status)) return ""; return `<article class="message stage-message result-card"><div class="stage-rail"><span class="stage-index">✓</span></div><section class="stage-card"><div class="stage-title"><h3>${language === "zh" ? "结果" : "Result"}</h3></div><div class="stage-direct">${final ? markdown(final.content) : `<p class="muted">${language === "zh" ? "任务没有生成最终答复。" : "No final response."}</p>`}</div>${final ? '<span class="copy-response-slot"></span>' : ""}</section></article>`; }
+function requestContextHtml(run, previousOpen = false) {
+  const requests = run.messages.filter((message) => message.role === "user");
+  if (!requests.length) return "";
+  const current = requests.at(-1), earlier = requests.slice(0, -1);
+  const currentCard = `<article class="message role-user current-request"><b>${earlier.length ? (language === "zh" ? "本轮请求" : "Current request") : t("user")}</b><div class="markdown">${markdown(current.content)}</div>${attachmentsHtml(current)}</article>`;
+  if (!earlier.length) return currentCard;
+  return `${currentCard}<details class="prior-requests"${previousOpen ? " open" : ""}><summary>${language === "zh" ? `此前请求（${earlier.length}）` : `Earlier requests (${earlier.length})`}</summary><div class="prior-requests-list">${earlier.map((message, index) => `<article><b>${language === "zh" ? `第 ${index + 1} 次请求` : `Request ${index + 1}`}</b><div class="markdown">${markdown(message.content)}</div>${attachmentsHtml(message)}</article>`).join("")}</div></details>`;
+}
+function workflowStagesHtml(detail, steps, calls, previousOpen = false) {
+  const users = detail.run.messages.flatMap((message, index) => message.role === "user" ? [index] : []);
+  if (users.length < 2) return steps.map((step, index) => stepCard(detail, step, calls, index)).join("");
+  const currentStart = users.at(-1);
+  const earlier = [], current = [];
+  let earlierNeedsReview = 0;
+  steps.forEach((step, index) => {
+    const card = stepCard(detail, step, calls, index);
+    if (step.start_message_index != null && step.start_message_index < currentStart) {
+      earlier.push(card);
+      if (step.status === "needs_review") earlierNeedsReview++;
+    } else current.push(card);
+  });
+  if (!earlier.length) return current.join("");
+  const warning = earlierNeedsReview ? `<span class="prior-stages-warning">${language === "zh" ? `${earlierNeedsReview} 项需核对` : `${earlierNeedsReview} need review`}</span>` : "";
+  return `<details class="prior-stages"${previousOpen ? " open" : ""}><summary>${language === "zh" ? `先前执行阶段（${earlier.length}）` : `Earlier execution phases (${earlier.length})`}${warning}</summary><div class="prior-stages-list">${earlier.join("")}</div></details>${current.join("")}`;
+}
+function currentTurnEvents(detail) {
+  if (detail.run.status === "created") return [];
+  const events = detail.events || [];
+  const start = events.findLastIndex((event) => event.type === "run.started");
+  return start < 0 ? events : events.slice(start);
+}
+function connectionHtml(detail) { const event = [...currentTurnEvents(detail)].reverse().find((item) => ["model.retrying","model.recovered"].includes(item.type)); if (event?.type !== "model.retrying" || detail.run.status !== "running") return ""; const attempt = event.data?.attempt || 2, total = event.data?.max_attempts || 3; return `<div class="connection-banner"><i></i><div><b>${escape(event.title)}</b><small>${escape(event.detail || "")} · ${language === "zh" ? `第 ${attempt}/${total} 次尝试` : `attempt ${attempt}/${total}`}</small></div></div>`; }
+function completionReviewHtml(detail) {
+  const warning = detail.run.status === "created" ? null : detail.run.stage_notes?.completion_review;
+  const requests = detail.run.messages || [];
+  const currentStart = requests.findLastIndex((message) => message.role === "user");
+  const hasEarlierTurn = requests.some((message, index) => message.role === "user" && index < currentStart);
+  const uncertain = (detail.run.workflow_steps || []).filter((step) =>
+    step.status === "needs_review" && (!hasEarlierTurn || step.start_message_index == null || step.start_message_index >= currentStart)
+  ).map((step) => step.title);
+  if (warning || uncertain.length) {
+    const phaseNote = uncertain.length ? (language === "zh" ? `以下阶段的操作未成功：${uncertain.join("、")}。` : `No successful action in: ${uncertain.join(", ")}.`) : "";
+    return `<aside class="completion-review completion-warning"><b>${language === "zh" ? "完成核对提示" : "Completion check"}</b><span>${escape([warning, phaseNote].filter(Boolean).join(" "))}</span></aside>`;
+  }
+  const event = [...currentTurnEvents(detail)].reverse().find((item) => item.type === "completion.review_requested");
+  if (!event || !["created","running","waiting_approval"].includes(detail.run.status)) return "";
+  return `<aside class="completion-review"><b>${escape(event.title)}</b><span>${escape(event.detail || "")}</span></aside>`;
+}
+function evidenceHtml(detail) {
+  const {calls} = workflowData(detail), results = resultMap(detail), seen = new Set(), sources = [];
+  for (const action of [...calls].reverse()) {
+    if (!["read_file", "read_pdf", "fetch_url"].includes(action.tool_name)) continue;
+    const result = results.get(action.id);
+    if (result?.metadata?.status !== "succeeded") continue;
+    const target = action.tool_name === "fetch_url" ? action.arguments?.url : result.metadata?.path || action.arguments?.path;
+    if (typeof target !== "string" || !target.trim() || seen.has(target)) continue;
+    seen.add(target);
+    const web = action.tool_name === "fetch_url", url = web ? safeHttpUrl(target) : null;
+    const label = web ? target : target.split(/[\\/]/).pop() || target;
+    sources.push(web
+      ? `<li><span>${language === "zh" ? "网页" : "Web"}</span>${url ? `<a href="${escape(url)}" target="_blank" rel="noopener">${escape(label)}</a>` : escape(label)}</li>`
+      : `<li><span>${language === "zh" ? "文件" : "File"}</span><button type="button" data-preview-action="${escape(action.id)}" title="${escape(target)}">${escape(label)}</button></li>`);
+  }
+  if (!sources.length) return "";
+  sources.reverse();
+  const more = sources.length > 8 ? `<p>${language === "zh" ? `另有 ${sources.length - 8} 项可在步骤详情查看。` : `${sources.length - 8} more in step details.`}</p>` : "";
+  return `<details class="result-evidence"><summary>${language === "zh" ? "已读取资料" : "Sources opened"} <span>${sources.length}</span></summary><p>${language === "zh" ? "这是执行时读取的记录，不等于每项结论都引用了它。" : "These were opened during execution; this does not mean every claim cites them."}</p><ul>${sources.slice(0, 8).join("")}</ul>${more}</details>`;
+}
+function deliverCard(detail) { const final = latestTurnFinal(detail.run); if (!final && ["created","running","waiting_approval","paused"].includes(detail.run.status)) return ""; return `<article class="message stage-message result-card"><div class="stage-rail"><span class="stage-index">✓</span></div><section class="stage-card"><div class="stage-title"><h3>${language === "zh" ? "结果" : "Result"}</h3></div><div class="stage-direct">${final ? markdown(final.content) : `<p class="muted">${language === "zh" ? "任务没有生成最终答复。" : "No final response."}</p>`}</div>${evidenceHtml(detail)}${final ? '<span class="copy-response-slot"></span>' : ""}</section></article>`; }
 const animatedStepKeys = new Set();
 const stageEntranceObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries, observer) => {
   for (const entry of entries) {
@@ -377,7 +639,20 @@ const stageEntranceObserver = "IntersectionObserver" in window ? new Intersectio
 
 async function restartAtStage(stepId, feedback) {
   const id = activeId, epoch = viewEpoch;
-  const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:feedback, run_id:id, rewind_step_id:stepId, interface_language:language})});
+  const preview = await json(`/api/runs/${encodeURIComponent(id)}/rewind-preview?step_id=${encodeURIComponent(stepId)}`);
+  if (activeId !== id || viewEpoch !== epoch) return;
+  const dialog = $("#rewind-dialog");
+  $("#rewind-dialog-title").textContent = language === "zh" ? `从「${preview.from_step_title}」重新执行` : `Restart at “${preview.from_step_title}”`;
+  const list = (items) => items.length ? `<ul>${items.map((item) => `<li>${escape(item)}</li>`).join("")}</ul>` : `<p class="muted">${language === "zh" ? "无" : "None"}</p>`;
+  $("#rewind-preview-body").innerHTML = `<div class="rewind-preview-grid"><section><h3>${language === "zh" ? "保留并复用" : "Keep and reuse"}</h3>${list(preview.reused_steps.map((step) => step.title))}</section><section><h3>${language === "zh" ? "从这里重做" : "Redo from here"}</h3>${list(preview.discarded_steps.map((step) => step.title))}</section><section><h3>${language === "zh" ? "将恢复的文件" : "Files to restore"}</h3>${list(preview.restore_paths)}</section></div>${preview.warnings.length ? `<div class="rewind-warning"><b>${language === "zh" ? "需要留意" : "Needs attention"}</b>${list(preview.warnings)}</div>` : ""}<p class="rewind-feedback"><b>${language === "zh" ? "本次改进建议" : "Your feedback"}</b><span>${escape(feedback)}</span></p>`;
+  const confirmed = await new Promise((resolve) => {
+    let accepted = false;
+    $("#confirm-rewind").onclick = () => { accepted = true; dialog.close(); };
+    dialog.addEventListener("close", () => { $("#confirm-rewind").onclick = null; resolve(accepted); }, {once:true});
+    dialog.showModal();
+  });
+  if (!confirmed || activeId !== id || viewEpoch !== epoch) return;
+  const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:feedback, run_id:id, rewind_step_id:stepId, rewind_base_updated_at:preview.base_updated_at, rewind_preview_token:preview.preview_token, interface_language:language})});
   if (activeId !== id || viewEpoch !== epoch) return;
   lastRunSignature = null;
   await showRun(result.run_id);
@@ -419,16 +694,18 @@ function bindStageDetails(node) {
   });
 }
 function renderRun(detail, {force = false} = {}) {
-  const signature = JSON.stringify([detail.run.updated_at, detail.run.status, detail.run.messages.length, detail.events.length, detail.approval?.action_id, detail.run.workflow_steps, detail.run.workflow_plan]);
+  const signature = JSON.stringify([detail.run.updated_at, detail.run.status, detail.run.messages.length, detail.events.length, detail.approval?.action_id, detail.run.workflow_steps, detail.run.workflow_plan, detail.run.stage_notes?.completion_review]);
   $("#topic-title").textContent = detail.run.title || detail.run.goal.slice(0,48);
   $("#topic-title").title = detail.run.title || detail.run.goal;
   $("#stop-run").classList.toggle("hidden", !["created","running","waiting_approval","paused"].includes(detail.run.status));
   $("#empty-state").classList.add("hidden"); $("#conversation").classList.remove("hidden"); syncApproval(detail);
   if (!force && signature === lastRunSignature) return;
   document.querySelectorAll(".stage-details[open]").forEach((node) => openStepDetails.add(node.closest("[data-step-id]")?.dataset.stepId));
-  const {steps, calls} = workflowData(detail); const firstUser = detail.run.messages.find((message) => message.role === "user");
+  const {steps, calls} = workflowData(detail);
+  const previousRequestsOpen = Boolean($("#detail .prior-requests")?.open);
+  const previousStagesOpen = Boolean($("#detail .prior-stages")?.open);
   stageEntranceObserver?.disconnect();
-  $("#detail").innerHTML = `${firstUser ? `<article class="message role-user"><b>${t("user")}</b><div class="markdown">${markdown(firstUser.content)}</div>${attachmentsHtml(firstUser)}</article>` : ""}${runUsageHtml(detail)}${revisionHtml(detail.run)}${connectionHtml(detail)}${steps.map((step,index) => stepCard(detail,step,calls,index)).join("")}${deliverCard(detail)}`;
+  $("#detail").innerHTML = `${requestContextHtml(detail.run, previousRequestsOpen)}${runUsageHtml(detail)}${revisionHtml(detail.run)}${connectionHtml(detail)}${completionReviewHtml(detail)}${workflowStagesHtml(detail, steps, calls, previousStagesOpen)}${deliverCard(detail)}`;
   if (!reducedMotion.matches) document.querySelectorAll("#detail .stage-message").forEach((node, index) => {
     const key = `${detail.run.id}:${node.dataset.stepId || "result"}`;
     if (animatedStepKeys.has(key)) return;
@@ -441,7 +718,8 @@ function renderRun(detail, {force = false} = {}) {
   document.querySelectorAll("[data-feedback-shortcut]").forEach((button) => button.onclick = () => { const field = button.closest(".stage-expanded").querySelector(".stage-feedback textarea"); field.value = shortcutText(button.dataset.feedbackShortcut); field.focus(); });
   document.querySelectorAll(".stage-feedback").forEach((form) => form.onsubmit = async (event) => { event.preventDefault(); const feedback = form.querySelector("textarea").value.trim(); const stepId = form.closest("[data-step-id]").dataset.stepId; if (!feedback) return; try { await restartAtStage(stepId, feedback); } catch (error) { $("#feedback").textContent = error.message; } });
   document.querySelectorAll("[data-preview-action]").forEach((button) => button.onclick = () => openFilePreview(button.dataset.previewAction));
-  const final = [...detail.run.messages].reverse().find((message) => message.role === "assistant" && !message.tool_calls?.length), slot = $("#detail .copy-response-slot");
+  document.querySelectorAll("[data-open-revision]").forEach((button) => button.onclick = () => { const revision = detail.run.workflow_revisions.find((item) => item.id === button.dataset.openRevision); if (revision) openRevisionArchive(revision); });
+  const final = latestTurnFinal(detail.run), slot = $("#detail .copy-response-slot");
   if (slot && final?.content) { const button = document.createElement("button"); button.className = "copy-response secondary-button"; button.type = "button"; button.dataset.copy=final.content; button.textContent = language === "zh" ? "复制答复" : "Copy"; button.onclick = async () => { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = language === "zh" ? "已复制" : "Copied"; }; slot.replaceWith(button); }
   lastRunSignature = signature;
 }
@@ -472,12 +750,12 @@ let topicAction = null;
 function openTopicMenu(id,title) { topicAction = {id, mode:"rename"}; $("#topic-dialog-title").textContent = `${t("rename")} / ${t("delete")}`; $("#topic-input").value = title; $("#topic-input").classList.remove("hidden"); $("#topic-delete-warning").classList.add("hidden"); $("#topic-delete").classList.remove("hidden"); $("#topic-delete").onclick = () => { topicAction.mode = "delete"; $("#topic-delete-warning").classList.remove("hidden"); $("#topic-input").classList.add("hidden"); $("#topic-delete").classList.add("hidden"); }; $("#topic-dialog").showModal(); }
 
 const capabilityMeta = [
-  ["local_read","读取本地文件","查看已授权目录中的内容"],["web_read","联网查资料","搜索和读取公开网页"],["workspace_create","创建文件","在工作区生成新文件"],["workspace_modify","修改文件","更新工作区已有文件"],["mcp_read","MCP 只读","调用服务声明为只读的工具"],["mcp_write","MCP 外部操作","调用可能改变外部状态的工具"],["outside_write","工作区外写入","修改本次工作目录之外的文件"],["destructive","高影响操作","删除、发布或服务声明的破坏性动作"]
+  ["local_read","读取本地文件","查看已授权目录中的内容"],["web_read","联网查资料","搜索和读取公开网页"],["browser_interaction","浏览器点击与输入","可能提交表单或改变网页状态"],["workspace_create","创建文件","在工作区生成新文件"],["workspace_modify","修改文件","更新工作区已有文件"],["mcp_read","MCP 只读","调用服务声明为只读的工具"],["mcp_write","MCP 外部操作","调用可能改变外部状态的工具"],["outside_write","工作区外写入","修改本次工作目录之外的文件"],["destructive","高影响操作","删除、发布或服务声明的破坏性动作"]
 ];
 const presets = {
-  cautious:{local_read:"allow",web_read:"allow",workspace_create:"ask",workspace_modify:"ask",mcp_read:"ask",mcp_write:"ask",outside_write:"ask",destructive:"ask",other:"ask"},
-  balanced:{local_read:"allow",web_read:"allow",workspace_create:"allow",workspace_modify:"allow",mcp_read:"allow",mcp_write:"ask",outside_write:"ask",destructive:"ask",other:"ask"},
-  trusted:{local_read:"allow",web_read:"allow",workspace_create:"allow",workspace_modify:"allow",mcp_read:"allow",mcp_write:"allow",outside_write:"allow",destructive:"ask",other:"allow"}
+  cautious:{local_read:"allow",web_read:"allow",browser_interaction:"ask",workspace_create:"ask",workspace_modify:"ask",mcp_read:"ask",mcp_write:"ask",outside_write:"ask",destructive:"ask",other:"ask"},
+  balanced:{local_read:"allow",web_read:"allow",browser_interaction:"ask",workspace_create:"allow",workspace_modify:"allow",mcp_read:"allow",mcp_write:"ask",outside_write:"ask",destructive:"ask",other:"ask"},
+  trusted:{local_read:"allow",web_read:"allow",browser_interaction:"allow",workspace_create:"allow",workspace_modify:"allow",mcp_read:"allow",mcp_write:"allow",outside_write:"allow",destructive:"ask",other:"allow"}
 };
 function renderCapabilityRules(rules) { $("#capability-rules").innerHTML = capabilityMeta.map(([key,title,hint]) => `<div class="capability-row"><div><b>${title}</b><small>${hint}</small></div><select data-capability="${key}">${key === "destructive" ? "" : `<option value="allow" ${rules[key] === "allow" ? "selected" : ""}>自动执行</option>`}<option value="ask" ${rules[key] === "ask" ? "selected" : ""}>先询问</option><option value="deny" ${rules[key] === "deny" ? "selected" : ""}>关闭</option></select></div>`).join(""); }
 function currentCapabilityRules() { const rules = {}; document.querySelectorAll("[data-capability]").forEach((node) => rules[node.dataset.capability] = node.value); rules.other = settings?.capability_rules?.other || "ask"; return rules; }
@@ -520,6 +798,34 @@ async function saveMcp() { const body = {name:editingMcpName || $("#mcp-name").v
 async function openSettings() { settings = await json("/api/settings"); $("#interface-language").value = settings.interface_language || "zh"; $("#default-autonomy").value = settings.default_autonomy || "yellow"; $("#default-iterations").value = settings.max_iterations; $("#default-tool-calls").value = settings.max_tool_calls; $("#default-profile").innerHTML = profileOptions(settings.default_profile); renderCapabilityRules({...presets.balanced,...settings.capability_rules}); renderProfileSettings(); renderMcpServers(); $("#settings-dialog").showModal(); }
 
 $("#grant-approval").onclick = () => submitApproval(true); $("#deny-approval").onclick = () => submitApproval(false);
+$("#browser-toggle").onclick = toggleBrowser;
+$("#browser-close").onclick = closeBrowser;
+$("#browser-address-form").onsubmit = (event) => { event.preventDefault(); const url = $("#browser-address-input").value.trim(); if (url) queueBrowserControl({action:"navigate",url}); };
+$("#browser-back").onclick = () => queueBrowserControl({action:"back"});
+$("#browser-reload").onclick = () => queueBrowserControl({action:"reload"});
+$("#browser-preview").onclick = (event) => {
+  const image = event.currentTarget, bounds = image.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  $("#browser-keyboard-input").focus({preventScroll:true});
+  queueBrowserControl({action:"click",x:(event.clientX-bounds.left)*image.naturalWidth/bounds.width,y:(event.clientY-bounds.top)*image.naturalHeight/bounds.height});
+};
+$("#browser-screen").addEventListener("wheel", (event) => { event.preventDefault(); queueBrowserControl({action:"scroll",dx:Math.round(event.deltaX),dy:Math.round(event.deltaY)}); }, {passive:false});
+function forwardBrowserKey(event, fromKeyboardInput = false) {
+  event.stopPropagation();
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  const key = event.key === " " ? "Space" : event.key;
+  if (["Enter","Tab","Escape","Backspace","Delete","Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End","PageUp","PageDown"].includes(key)) {
+    event.preventDefault(); queueBrowserControl({action:"press",key});
+  } else if (!fromKeyboardInput && event.key.length === 1) {
+    event.preventDefault(); queueBrowserControl({action:"type",text:event.key});
+  }
+}
+$("#browser-screen").addEventListener("keydown", (event) => { if (event.target === event.currentTarget) forwardBrowserKey(event); });
+$("#browser-keyboard-input").addEventListener("keydown", (event) => forwardBrowserKey(event, true));
+$("#browser-keyboard-input").addEventListener("input", (event) => {
+  const field = event.currentTarget, value = field.value;
+  if (value) { field.value = ""; queueBrowserControl({action:"type",text:value}); }
+});
 $("#stop-run").onclick = async () => { const id = activeId, epoch = viewEpoch; if (id) { await json(`/api/runs/${id}/stop`, {method:"POST"}); if (activeId === id && viewEpoch === epoch) await showRun(id); } };
 $("#guide-trigger").onclick = () => $("#guide-dialog").showModal(); $("#welcome-guide").onclick = () => $("#guide-dialog").showModal();
 function chooseWorkdir() {
@@ -918,13 +1224,14 @@ document.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); newTopic(); } });
 $("#goal").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("#run-form").requestSubmit(); } });
 $("#topic-form").onsubmit = async (event) => { event.preventDefault(); const action = topicAction; if (action.mode === "delete") { await json(`/api/runs/${action.id}`, {method:"DELETE"}); runEtags.delete(action.id); $("#topic-dialog").close(); if (activeId === action.id) newTopic(); else await loadRuns(); return; } await json(`/api/runs/${action.id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({title:$("#topic-input").value.trim()})}); $("#topic-dialog").close(); activeId === action.id ? await showRun(action.id) : await loadRuns(); };
-$("#run-form").onsubmit = async (event) => { event.preventDefault(); if (sending) return; const input = $("#goal"); const draft = input.value; const submission = {goal:draft.trim() || (pendingFiles.length ? t("attachmentGoal") : ""), files:[...pendingFiles], workdir:selectedWorkdir, runId:activeId, language}; if (!submission.goal) return; const epoch = viewEpoch; const send = $(".send-button"); sending = true; send.disabled = true; try { const attachments = await uploadPendingFiles(submission.files, submission.workdir); const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:submission.goal,run_id:submission.runId,interface_language:submission.language,workdir:submission.workdir,attachments})}); if (viewEpoch !== epoch || activeId !== submission.runId) return; if (input.value === draft) input.value = ""; pendingFiles = pendingFiles.filter((file) => !submission.files.includes(file)); renderPendingFiles(); $("#feedback").textContent = ""; await showRun(result.run_id); } catch (error) { if (viewEpoch === epoch && activeId === submission.runId) $("#feedback").textContent = error.message; } finally { sending = false; send.disabled = false; } };
+$("#run-form").onsubmit = async (event) => { event.preventDefault(); if (sending) return; const input = $("#goal"); const draft = input.value; const submission = {goal:draft.trim() || (pendingFiles.length ? t("attachmentGoal") : ""), files:[...pendingFiles], workdir:selectedWorkdir, runId:activeId, language}; if (!submission.goal) return; const epoch = viewEpoch; const send = $(".send-button"); sending = true; send.disabled = true; try { const attachments = await uploadPendingFiles(submission.files, submission.workdir); const result = await json("/api/runs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal:submission.goal,run_id:submission.runId,interface_language:submission.language,workdir:submission.workdir,attachments,browser_session_id:browserSessionId})}); if (viewEpoch !== epoch || activeId !== submission.runId) return; if (input.value === draft) input.value = ""; pendingFiles = pendingFiles.filter((file) => !submission.files.includes(file)); renderPendingFiles(); $("#feedback").textContent = ""; await showRun(result.run_id); } catch (error) { if (viewEpoch === epoch && activeId === submission.runId) $("#feedback").textContent = error.message; } finally { sending = false; send.disabled = false; } };
 $("#settings-form").onsubmit = async (event) => { event.preventDefault(); const profiles = {}; document.querySelectorAll(".profile-card").forEach((card) => { const profile = {}; card.querySelectorAll("[data-key]").forEach((input) => { if (input.dataset.key === "apiKey" && !input.value.trim()) return; profile[input.dataset.key] = input.type === "number" ? Number(input.value) : input.value.trim(); }); profiles[card.dataset.profile] = profile; }); try { await json("/api/settings", {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({interface_language:$("#interface-language").value,default_autonomy:$("#default-autonomy").value,max_iterations:Number($("#default-iterations").value),max_tool_calls:Number($("#default-tool-calls").value),default_profile:$("#default-profile").value,profiles,capability_rules:currentCapabilityRules()})}); $("#settings-feedback").textContent = language === "zh" ? "已保存" : "Saved"; } catch (error) { $("#settings-feedback").textContent = error.message; } };
 $("#mcp-import-button").onclick = async () => { try { const result = await json("/api/mcp/import", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({config:JSON.parse($("#mcp-import").value)})}); $("#mcp-feedback").textContent = `已导入：${result.imported.join(", ")}`; $("#mcp-import").value = ""; await refreshSettings(); } catch (error) { $("#mcp-feedback").textContent = error.message; } };
 
 let pollBusy = false;
 (async () => {
   await loadConfig();
+  await restoreBrowserPanel();
   await loadRuns();
   setInterval(async () => {
     if (!activeId || pollBusy) return;

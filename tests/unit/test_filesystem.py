@@ -24,6 +24,8 @@ def test_write_then_read_file_in_workspace(workspace):
     assert write_result.ok is True
     assert write_result.metadata["existed"] is False
     assert read_result.content == "你好，ClearAct"
+    stat = (workspace / "notes" / "hello.txt").stat()
+    assert read_result.metadata["source_version"] == f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
 def test_read_file_continues_from_character_offset(workspace):
@@ -72,6 +74,37 @@ def test_read_file_streams_large_unicode_file_and_rejects_offset_past_end(worksp
         asyncio.run(ReadFileTool().execute({"path": "large.txt", "offset": 150_003}, context, "past_end"))
 
 
+def test_oversized_read_requests_are_chunked_for_text_and_pdf(workspace, monkeypatch):
+    (workspace / "large.txt").write_text("A" * 60_000, encoding="utf-8")
+    (workspace / "large.pdf").write_bytes(b"placeholder")
+
+    class Page:
+        def extract_text(self):
+            return "B" * 60_000
+
+    class Reader:
+        def __init__(self, _path):
+            self.pages = [Page()]
+
+    monkeypatch.setattr(filesystem, "PdfReader", Reader)
+    context = ToolContext(workspace)
+
+    async def execute():
+        text = await ReadFileTool().execute({"path": "large.txt", "max_chars": 1_000_000}, context, "text")
+        pdf = await ReadPdfTool().execute({"path": "large.pdf", "max_chars": 1_000_000}, context, "pdf")
+        return text, pdf
+
+    text, pdf = asyncio.run(execute())
+    assert text.metadata["next_offset"] == 50_000
+    assert text.content.startswith("A" * 50_000)
+    assert '"max_chars": 50000' in text.content
+    assert pdf.metadata["next_page_offset"] == 50_000
+    assert pdf.content.startswith("B" * 50_000)
+    assert '"max_chars": 50000' in pdf.content
+    assert ReadFileTool().definition().parameters["properties"]["max_chars"]["maximum"] == 50_000
+    assert ReadPdfTool().definition().parameters["properties"]["max_chars"]["maximum"] == 50_000
+
+
 def test_read_pdf_continues_with_page_and_page_offset(workspace, monkeypatch):
     (workspace / "report.pdf").write_bytes(b"placeholder")
 
@@ -116,6 +149,8 @@ def test_read_pdf_continues_with_page_and_page_offset(workspace, monkeypatch):
     assert third.metadata["truncated"] is False
     assert third.metadata["next_page"] is None
     assert whole.content == "ABCDE\n\nFGHIJ"
+    stat = (workspace / "report.pdf").stat()
+    assert whole.metadata["source_version"] == f"{stat.st_mtime_ns}:{stat.st_size}"
 
     with pytest.raises(ToolValidationError, match="start_page exceeds"):
         asyncio.run(ReadPdfTool().execute({"path": "report.pdf", "start_page": 3}, context, "invalid"))

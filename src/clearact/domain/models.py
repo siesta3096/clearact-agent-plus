@@ -44,6 +44,7 @@ class WorkflowStep(BaseModel):
     id: str = Field(default_factory=lambda: new_id("step"))
     title: str
     summary: str
+    done_when: str | None = None
     plan_item_id: str | None = None
     kind: str = "general"
     # Completed is the migration-safe default for ledgers created before phase status existed.
@@ -60,6 +61,7 @@ class WorkflowPlanItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("plan"))
     title: str
     summary: str
+    done_when: str | None = None
     kind: str = "general"
 
 
@@ -68,11 +70,13 @@ class WorkflowRevision(BaseModel):
 
     id: str = Field(default_factory=lambda: new_id("rev"))
     from_step_id: str
+    from_step_title: str | None = None
     feedback: str
     reused_step_ids: list[str] = Field(default_factory=list)
     discarded_message_count: int = 0
     restored_snapshot_ids: list[str] = Field(default_factory=list)
     rollback_warnings: list[str] = Field(default_factory=list)
+    archive_available: bool = False
     created_at: datetime = Field(default_factory=datetime.now)
 
 

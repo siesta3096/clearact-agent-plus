@@ -44,6 +44,40 @@ class RunStore:
             return []
         return [RunEvent.model_validate_json(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
+    def _revision_path(self, run_id: str, revision_id: str) -> Path:
+        if (
+            not run_id.startswith("run_")
+            or not revision_id.startswith("rev_")
+            or any(char in value for value in (run_id, revision_id) for char in "\\/")
+        ):
+            raise ValueError("Invalid run or revision ID.")
+        return self._root / "history" / run_id / f"{revision_id}.json"
+
+    def save_revision_archive(self, run: Run, revision_id: str) -> None:
+        """Keep the complete previous branch before trimming the active ledger."""
+        path = self._revision_path(run.id, revision_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "run": run.model_dump(mode="json"),
+            "events": [event.model_dump(mode="json") for event in self.load_events(run.id)],
+        }
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
+
+    def load_revision_archive(self, run_id: str, revision_id: str) -> dict:
+        return json.loads(self._revision_path(run_id, revision_id).read_text(encoding="utf-8"))
+
+    def delete_revision_archives(self, run_id: str) -> None:
+        directory = self._revision_path(run_id, "rev_placeholder").parent
+        if directory.is_dir():
+            for path in directory.glob("rev_*.json"):
+                path.unlink()
+            for path in directory.glob("rev_*.json.tmp"):
+                path.unlink()
+            if not any(directory.iterdir()):
+                directory.rmdir()
+
     def truncate_events_before_action(self, run_id: str, action_id: str) -> None:
         """Drop the selected action and every subsequent event for a stage rewind."""
         events = self.load_events(run_id)
