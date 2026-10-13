@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -44,6 +45,7 @@ from clearact.runtime.stage_mapper import StageMapper
 from clearact.runtime.state import transition
 from clearact.storage.checkpoint_store import CheckpointStore
 from clearact.storage.run_store import RunStore
+from clearact.tools.artifacts import FILE_WRITE_TOOLS, OFFICE_TOOLS
 from clearact.tools.base import ToolContext
 from clearact.tools.filesystem import MAX_READ_CHARS
 from clearact.tools.registry import ToolRegistry
@@ -639,7 +641,7 @@ class AgentRunner:
         written = {
             str(message.metadata["path"])
             for message in run.messages[last_user_index + 1:]
-            if message.role == "tool" and message.name == "write_file"
+            if message.role == "tool" and message.name in FILE_WRITE_TOOLS
             and message.metadata.get("status") == "succeeded"
             and isinstance(message.metadata.get("path"), str)
         }
@@ -656,26 +658,33 @@ class AgentRunner:
         actions = {
             action.id: action
             for message in current_turn if message.role == "assistant"
-            for action in message.tool_calls if action.tool_name == "write_file"
+            for action in message.tool_calls if action.tool_name in FILE_WRITE_TOOLS
         }
-        expected: dict[str, str] = {}
+        expected: dict[str, tuple[str, str]] = {}
         for message in current_turn:
-            if message.role != "tool" or message.name != "write_file":
+            if message.role != "tool" or message.name not in FILE_WRITE_TOOLS:
                 continue
             if message.metadata.get("status") != "succeeded":
                 continue
             path = message.metadata.get("path")
             action = actions.get(message.tool_call_id or "")
             content = action.arguments.get("content") if action else None
-            if isinstance(path, str) and isinstance(content, str):
-                expected[path] = content
+            content_hash = message.metadata.get("content_sha256") if message.name in OFFICE_TOOLS else None
+            if isinstance(path, str) and isinstance(content_hash, str):
+                expected[path] = ("sha256", content_hash)
+            elif isinstance(path, str) and isinstance(content, str):
+                expected[path] = ("text", content)
         changed: list[str] = []
-        for path, content in expected.items():
+        for path, (kind, content) in expected.items():
             target = Path(path)
             if not target.is_file():
                 continue  # The missing-file check reports this separately.
             try:
-                if target.read_text(encoding="utf-8") != content:
+                actual = (
+                    hashlib.sha256(target.read_bytes()).hexdigest() if kind == "sha256"
+                    else target.read_text(encoding="utf-8")
+                )
+                if actual != content:
                     changed.append(path)
             except (OSError, UnicodeError):
                 changed.append(path)
@@ -799,7 +808,9 @@ class AgentRunner:
     def _guard_read_only_action(self, run: Run, action: Action) -> tuple[str, str] | None:
         """Prevent unproductive inspection loops without discarding evidence."""
         strategy = run.research_strategy or classify_research_strategy(run)
-        if action.tool_name in {"web_search", "fetch_url", "computer_use"} and strategy.mode == "local_only":
+        if action.tool_name in {"web_search", "fetch_url", "computer_use", "execute_command"} and (
+            strategy.mode == "local_only"
+        ):
             return (
                 "Skipped: the user asked to work without web access. Use local and attached evidence only.",
                 "local_only",
@@ -876,8 +887,15 @@ class AgentRunner:
     def _policy_tool_offered(run: Run, tool_name: str) -> bool:
         if tool_name in {"list_files", "read_file", "read_pdf"}:
             return run.policy.allow_read and run.policy.capability_rules.get("local_read") != "deny"
-        if tool_name == "write_file":
+        if tool_name in FILE_WRITE_TOOLS:
             return run.policy.allow_write
+        if tool_name == "execute_command":
+            return all((run.policy.allow_read, run.policy.allow_write, run.policy.allow_web)) and not any(
+                run.policy.capability_rules.get(category) == "deny" for category in (
+                    "command_execute", "local_read", "web_read", "workspace_create", "workspace_modify",
+                    "outside_write", "destructive", "mcp_read", "mcp_write", "browser_interaction",
+                )
+            )
         if tool_name in {"web_search", "fetch_url"}:
             return run.policy.allow_web and run.policy.capability_rules.get("web_read") != "deny"
         if tool_name == "computer_use" or tool_name.startswith("mcp__"):
@@ -900,11 +918,13 @@ class AgentRunner:
         return "Current permission limits: " + " ".join(disabled) + " Explain any blocked requirement; do not guess."
 
     def _web_tool_offered(self, run: Run, tool_name: str) -> bool:
-        if tool_name not in {"computer_use", "web_search", "fetch_url"}:
+        if tool_name not in {"computer_use", "web_search", "fetch_url", "execute_command"}:
             return True
         if not self._policy_tool_offered(run, tool_name):
             return False
         strategy = run.research_strategy or classify_research_strategy(run)
+        if tool_name == "execute_command":
+            return strategy.mode != "local_only"
         if tool_name == "computer_use":
             return bool(
                 strategy.mode != "local_only"
@@ -1208,7 +1228,7 @@ class AgentRunner:
                 or not self._retained_read_is_current(message)
             ):
                 continue
-            if message.name == "write_file" and isinstance(message.metadata.get("path"), str):
+            if message.name in FILE_WRITE_TOOLS and isinstance(message.metadata.get("path"), str):
                 target = Path(message.metadata["path"]).resolve()
                 prefixes = (
                     f"read_file:{target}:", f"read_pdf:{target}:", f"list_files:{target.parent}:",

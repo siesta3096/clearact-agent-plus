@@ -40,17 +40,16 @@ def compact_messages(
 ) -> list[ChatMessage]:
     """Retain essential messages and recent complete transactions within budget.
 
-    Original system instructions, the original and latest user requests, and
-    the latest transaction are never shortened or split. Older content is
-    omitted, not promoted into a fabricated system summary.
+    Original system instructions, every user request, and the latest transaction
+    are never shortened or split. An intermediate user request may contain an
+    enduring constraint, so only older assistant/tool content can be omitted.
+    Omitted content is not promoted into a fabricated system summary.
     """
     if keep_recent < 1:
         raise ValueError("keep_recent must be at least one transaction.")
     groups = message_groups(messages)
     required = {index for index, group in enumerate(groups) if group[0].role == "system"}
-    user_groups = [index for index, group in enumerate(groups) if group[0].role == "user"]
-    if user_groups:
-        required.update((user_groups[0], user_groups[-1]))
+    required.update(index for index, group in enumerate(groups) if group[0].role == "user")
     tool_groups = [index for index, group in enumerate(groups) if group[0].tool_calls]
     if tool_groups:
         required.add(tool_groups[-1])
@@ -74,7 +73,7 @@ def compact_messages(
         estimate = budget.estimate(result, definitions)
         raise ContextBudgetError(
             f"Essential context exceeds the input budget ({estimate} estimated tokens, limit {budget.limit}). "
-            "The system instructions, original/latest request, latest tool transaction and tool definitions "
+            "The system instructions, all user requests, latest tool transaction and tool definitions "
             "cannot be shortened safely. Increase the context window or reduce the request/tool output size."
         )
     return result

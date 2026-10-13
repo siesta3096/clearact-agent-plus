@@ -54,6 +54,192 @@ def web_environment(tmp_path, monkeypatch):
     return settings, RunStore(settings.data_root)
 
 
+@pytest.mark.parametrize("status", [
+    RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED,
+])
+def test_startup_marks_abandoned_tasks_interrupted_without_replaying(web_environment, monkeypatch, status):
+    _, store = web_environment
+    successful = Action(tool_name="write_file", arguments={"path": "finished.txt", "content": "done"})
+    pending = Action(tool_name="mcp__mail__send", arguments={"body": "mail"})
+    successful_result = ChatMessage(
+        role="tool", name=successful.tool_name, tool_call_id=successful.id, content="written",
+        metadata={"status": "succeeded", "snapshot_id": "snap_original"},
+    )
+    run = Run(
+        goal="Produce a report and send it", status=status,
+        messages=[
+            ChatMessage(role="user", content="Write the report"),
+            ChatMessage(role="assistant", tool_calls=[successful, pending]),
+            successful_result,
+        ],
+        workflow_steps=[
+            WorkflowStep(title="完成写入", summary="Saved file", status="completed", action_ids=[successful.id]),
+            WorkflowStep(title="发送", summary="Send mail", status="active", action_ids=[pending.id]),
+        ],
+    )
+    store.save_run(run)
+    store.append_event(RunEvent(
+        type="action.completed", run_id=run.id, action_id=successful.id, title="File saved",
+    ))
+    browser_closes = []
+
+    async def close_all():
+        browser_closes.append(True)
+
+    async def no_automatic_execution(*args, **kwargs):
+        raise AssertionError("Restart reconciliation must never invoke an execution provider")
+
+    monkeypatch.setattr(webapp, "_computer_use_sessions", SimpleNamespace(close_all=close_all))
+    monkeypatch.setattr(webapp.cli, "_run", no_automatic_execution)
+
+    async def scenario():
+        async with webapp.app.router.lifespan_context(webapp.app):
+            saved = store.load_run(run.id)
+            assert saved.status == RunStatus.INTERRUPTED
+            assert saved.messages[2] == successful_result
+            interrupted = saved.messages[3]
+            assert interrupted.role == "tool" and interrupted.tool_call_id == pending.id
+            assert interrupted.metadata == {
+                "status": "interrupted", "reason": "service_restart", "side_effects": "unknown", "replayed": False,
+            }
+            assert "not replayed" in interrupted.content
+            assert "MCP" in saved.messages[4].content
+            assert saved.messages[-1].role == "system"
+            assert "generic follow-up" in saved.messages[-1].content
+            assert saved.workflow_steps[0].status == "completed"
+            assert saved.workflow_steps[1].status == "needs_review"
+            assert not webapp._pending_approvals
+            assert not webapp._active_tasks
+            events = store.load_events(run.id)
+            assert [event.type for event in events] == [
+                "action.completed", "action.interrupted", "run.interrupted",
+            ]
+            assert events[-1].data["previous_status"] == status.value
+            assert events[-1].data["automatic_resume"] is False
+            assert events[-1].data["interrupted_action_ids"] == [pending.id]
+            initial = saved.model_dump()
+            assert webapp._interrupt_incomplete_runs(store) == 0
+            assert store.load_run(run.id).model_dump() == initial
+            assert store.load_events(run.id) == events
+
+    asyncio.run(scenario())
+    assert browser_closes == [True]
+
+
+def test_recovery_closes_historical_tool_groups_before_followups(web_environment):
+    _, store = web_environment
+    first = Action(tool_name="run_command", arguments={"command": "process-file"})
+    second = Action(tool_name="computer_use", arguments={"action": "click"})
+    run = Run(goal="continue", status=RunStatus.RUNNING, messages=[
+        ChatMessage(role="assistant", tool_calls=[first]),
+        ChatMessage(role="user", content="continue"),
+        ChatMessage(role="assistant", tool_calls=[second]),
+    ])
+    store.save_run(run)
+    assert webapp._interrupt_incomplete_runs(store) == 1
+    saved = store.load_run(run.id)
+    assert [message.role for message in saved.messages[:5]] == ["assistant", "tool", "user", "assistant", "tool"]
+    assert saved.messages[1].tool_call_id == first.id
+    assert saved.messages[4].tool_call_id == second.id
+
+
+def test_recovery_scans_all_saved_tasks_and_preserves_terminal_ledgers(web_environment, caplog):
+    _, store = web_environment
+    stale = Run(goal="Old abandoned task", status=RunStatus.RUNNING)
+    store.save_run(stale)
+    terminal = []
+    for index in range(25):
+        status = [RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.INTERRUPTED][index % 4]
+        run = Run(goal=f"Finished {index}", status=status)
+        store.save_run(run)
+        terminal.append((run.id, run.model_dump()))
+    corrupt = store._root / "run_corrupt.json"
+    corrupt.write_text("{ incomplete", encoding="utf-8")
+    mismatched = store._root / "run_mismatched.json"
+    mismatched.write_text(Run(id="../outside", goal="Invalid identity").model_dump_json(), encoding="utf-8")
+
+    assert webapp._interrupt_incomplete_runs(store) == 1
+    assert store.load_run(stale.id).status == RunStatus.INTERRUPTED
+    assert "run_corrupt.json" in caplog.text
+    assert "run_mismatched.json" in caplog.text
+    assert corrupt.read_text(encoding="utf-8") == "{ incomplete"
+    assert not (store._root.parent / "outside.json").exists()
+    for run_id, original in terminal:
+        assert store.load_run(run_id).model_dump() == original
+        assert store.load_events(run_id) == []
+
+
+def test_recovery_does_not_interrupt_a_live_task(web_environment):
+    _, store = web_environment
+    run = Run(goal="Live task", status=RunStatus.RUNNING)
+    store.save_run(run)
+
+    async def scenario():
+        task = asyncio.create_task(asyncio.Event().wait())
+        webapp._active_tasks[run.id] = task
+        try:
+            assert webapp._interrupt_incomplete_runs(store) == 0
+            assert store.load_run(run.id).status == RunStatus.RUNNING
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_interrupted_task_can_be_explicitly_resumed_with_a_closed_tool_history(web_environment, monkeypatch):
+    _, store = web_environment
+    action = Action(tool_name="run_command", arguments={"command": "create-report"})
+    run = Run(goal="report", status=RunStatus.RUNNING, messages=[ChatMessage(role="assistant", tool_calls=[action])])
+    store.save_run(run)
+    webapp._interrupt_incomplete_runs(store)
+    executions = []
+
+    async def execute(*args, run, **kwargs):
+        executions.append(run.id)
+        assert run.status == RunStatus.CREATED
+        assert run.messages[1].tool_call_id == action.id
+        assert run.messages[1].metadata["status"] == "interrupted"
+        assert run.messages[-1].content == "I verified the report; continue without rerunning the command"
+        run.status = RunStatus.COMPLETED
+        store.save_run(run)
+
+    monkeypatch.setattr(webapp.cli, "_run", execute)
+
+    async def scenario():
+        response = await webapp.start_run(webapp.StartRunRequest(
+            goal="I verified the report; continue without rerunning the command", run_id=run.id,
+        ))
+        assert response["run_id"] == run.id
+        await finish_run(run.id)
+
+    asyncio.run(scenario())
+    assert executions == [run.id]
+    assert store.load_run(run.id).status == RunStatus.COMPLETED
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_lifespan_handles_missing_or_invalid_configuration_and_closes_browser(tmp_path, monkeypatch, caplog, missing):
+    monkeypatch.setattr(webapp.cli, "_project_root", lambda: tmp_path)
+    if not missing:
+        (tmp_path / "clearact.json").write_text("{ invalid", encoding="utf-8")
+    closes = []
+
+    async def close_all():
+        closes.append(True)
+
+    monkeypatch.setattr(webapp, "_computer_use_sessions", SimpleNamespace(close_all=close_all))
+
+    async def scenario():
+        async with webapp.app.router.lifespan_context(webapp.app):
+            assert not (tmp_path / "data").exists()
+
+    asyncio.run(scenario())
+    assert closes == [True]
+    if not missing:
+        assert "configuration is invalid" in caplog.text
+
+
 async def finish_run(run_id):
     task = webapp._active_tasks.get(run_id)
     if task is not None:

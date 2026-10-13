@@ -22,13 +22,16 @@ from clearact.runtime.prompting import system_prompt
 from clearact.runtime.risk import RiskEvaluator
 from clearact.runtime.runner import AgentRunner
 from clearact.runtime.stage_mapper import StageMapper
-from clearact.settings import load_settings
+from clearact.settings import AppSettings, load_settings
 from clearact.storage.checkpoint_store import CheckpointStore
+from clearact.storage.lease import data_lease
 from clearact.storage.run_store import RunStore
 from clearact.storage.snapshots import SnapshotStore
 from clearact.tools.base import ToolContext
+from clearact.tools.command import ExecuteCommandTool
 from clearact.tools.filesystem import ListFilesTool, ReadFileTool, ReadPdfTool, WriteFileTool
 from clearact.tools.mcp import MCPManager, MCPTool
+from clearact.tools.office import CreateDocumentTool, CreateSpreadsheetTool
 from clearact.tools.registry import ToolRegistry
 from clearact.tools.web import FetchUrlTool, WebSearchTool
 from clearact.tools.workflow import DeclareWorkflowPlanTool, DeclareWorkflowStepTool, ReviseWorkflowPlanTool
@@ -116,7 +119,8 @@ def _print_run(run_id: str) -> None:
 def _restore_snapshot(snapshot_id: str) -> None:
     settings = load_settings(_project_root())
     # The snapshot itself records the exact run target; runs may authorize directories other than the default workspace.
-    target = SnapshotStore(settings.data_root).restore(snapshot_id)
+    with data_lease(settings.data_root):
+        target = SnapshotStore(settings.data_root).restore(snapshot_id)
     Console().print(f"已恢复快照 {snapshot_id} 到 {target}")
 
 
@@ -168,6 +172,29 @@ async def _run(
     project_root = _project_root()
     _load_dotenv(project_root)
     settings = load_settings(project_root)
+    with data_lease(settings.data_root):
+        await _run_impl(
+            goal, profile_name, autonomy, workdir, max_iterations, max_tool_calls,
+            run=run, interface_language=interface_language, approval_gate=approval_gate,
+            render_console=render_console, computer_use_manager=computer_use_manager, settings=settings,
+        )
+
+
+async def _run_impl(
+    goal: str,
+    profile_name: str | None,
+    autonomy: str | None,
+    workdir: str | None = None,
+    max_iterations: int | None = None,
+    max_tool_calls: int | None = None,
+    run: Run | None = None,
+    interface_language: str = "zh",
+    approval_gate: ApprovalGate | None = None,
+    render_console: bool = True,
+    computer_use_manager=None,
+    *,
+    settings: AppSettings,
+) -> None:
     selected_name = profile_name or settings.models["default_profile"]
     profile = settings.models["profiles"][selected_name]
     workspace_root = Path(workdir).expanduser().resolve() if workdir else settings.workspace_root
@@ -193,6 +220,9 @@ async def _run(
         ReadFileTool(),
         ReadPdfTool(),
         WriteFileTool(),
+        ExecuteCommandTool(),
+        CreateDocumentTool(),
+        CreateSpreadsheetTool(),
         WebSearchTool(),
         FetchUrlTool(),
     ):

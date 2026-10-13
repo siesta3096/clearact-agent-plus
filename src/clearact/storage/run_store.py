@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
 from clearact.domain.models import Run, RunEvent
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class RunStore:
@@ -28,8 +32,18 @@ class RunStore:
     def list_runs(self, limit: int = 20) -> list[Run]:
         if limit < 1:
             raise ValueError("limit must be at least 1")
-        runs = [Run.model_validate_json(path.read_text(encoding="utf-8")) for path in self._root.glob("run_*.json")]
-        return sorted(runs, key=lambda run: run.updated_at, reverse=True)[:limit]
+        return sorted(self.iter_runs(), key=lambda run: run.updated_at, reverse=True)[:limit]
+
+    def iter_runs(self) -> Iterator[Run]:
+        """Inspect every saved ledger without letting one corrupt file hide the others."""
+        for path in self._root.glob("run_*.json"):
+            try:
+                run = Run.model_validate_json(path.read_text(encoding="utf-8"))
+                if run.id != path.stem:
+                    raise ValueError("Run ledger ID does not match its filename.")
+                yield run
+            except (OSError, ValueError) as exc:
+                _LOGGER.warning("Cannot load run ledger %s: %s", path.name, type(exc).__name__)
 
     def append_event(self, event: RunEvent) -> None:
         path = self._root / f"{event.run_id}.events.jsonl"

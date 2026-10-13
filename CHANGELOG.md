@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.0 — 2026-10-13
+
+- Added explicitly approved command execution with argv input, workspace cwd, bounded stdout/stderr,
+  exit codes, effective timeout reporting and cancellation cleanup. Windows commands run in a
+  kill-on-close job; command execution is not a filesystem or network sandbox.
+- Added native DOCX and XLSX generation: document headings, paragraphs, lists and tables; workbook
+  sheets, styles, formulas and charts. Formulas recalculate in Excel; they are not evaluated locally.
+- Added binary before-images, atomic artifact writes, safe phase rewind and task-scoped downloads
+  that reject changed or unrelated files. External command effects remain explicitly unrecoverable.
+- Reconcile unfinished tasks at gateway startup, preserve completed results, close unmatched tool
+  calls as interrupted and require inspection before continuation; do not replay old approvals.
+- Coordinate gateway, CLI execution and snapshot restoration with a process-reentrant OS data
+  directory lock; reject a second writer before reconciling its active tasks.
+- Fixed browser press/scroll/back/reload argument forwarding, common no-web instruction detection,
+  and loss of intermediate user requirements during context compaction.
+- Added reproducible execution, artifact, cancellation, recovery and permission regression scenarios.
+
 ## Unreleased
 
 - Added a ready-to-copy local configuration and bounded MCP service discovery so an unavailable server cannot block a run.

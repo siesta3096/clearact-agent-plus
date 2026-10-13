@@ -7,13 +7,15 @@ import ctypes
 import difflib
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import threading
 import webbrowser
-from contextlib import suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import uvicorn
@@ -37,14 +39,145 @@ from clearact.domain.models import (
 from clearact.runtime.model_retry import ModelRequestError
 from clearact.runtime.prompting import system_prompt
 from clearact.settings import load_settings
+from clearact.storage.lease import data_lease
 from clearact.storage.run_store import RunStore
 from clearact.storage.snapshots import SnapshotStore
+from clearact.tools.artifacts import FILE_WRITE_TOOLS, OFFICE_TOOLS
 from clearact.tools.computer_use import BrowserSessionManager
 from clearact.tools.mcp import MCPManager
 
 _ASSET_DIR = Path(__file__).with_name("web")
+_LOGGER = logging.getLogger(__name__)
 
-app = FastAPI(title="ClearAct Console")
+
+def _interrupt_incomplete_runs(store: RunStore) -> int:
+    """Reconcile abandoned execution; never replay a tool or restore an approval."""
+    incomplete_statuses = {
+        RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED,
+    }
+    recovered_count = 0
+    for run in store.iter_runs():
+        active = _active_tasks.get(run.id)
+        if run.status not in incomplete_statuses or (active is not None and not active.done()):
+            continue
+        previous_status = run.status
+        interrupted_actions: list[Action] = []
+        repaired_messages: list[ChatMessage] = []
+        message_index_map: dict[int, int] = {}
+        index = 0
+        while index < len(run.messages):
+            message = run.messages[index]
+            message_index_map[index] = len(repaired_messages)
+            repaired_messages.append(message)
+            index += 1
+            if message.role != "assistant" or not message.tool_calls:
+                continue
+            # Results must immediately follow their assistant call group. Insert
+            # missing outcomes before later messages so provider history is valid.
+            completed_ids = set()
+            while index < len(run.messages) and run.messages[index].role == "tool":
+                result = run.messages[index]
+                message_index_map[index] = len(repaired_messages)
+                repaired_messages.append(result)
+                completed_ids.add(result.tool_call_id)
+                index += 1
+            for action in message.tool_calls:
+                if action.id in completed_ids:
+                    continue
+                interrupted_actions.append(action)
+                repaired_messages.append(ChatMessage(
+                    role="tool",
+                    name=action.tool_name,
+                    tool_call_id=action.id,
+                    content=(
+                        "The service stopped before this action had a recorded final result. "
+                        "Its execution and side effects are unknown. It was not replayed. "
+                        "Ask the user to verify the effects before retrying a command, file write, or external action."
+                    ),
+                    metadata={
+                        "status": "interrupted", "reason": "service_restart", "side_effects": "unknown",
+                        "replayed": False,
+                    },
+                ))
+        message_index_map[len(run.messages)] = len(repaired_messages)
+        run.messages = repaired_messages
+        is_english = run.execution.interface_language == "en"
+        notice = (
+            "The service restarted while this task was unfinished. Recorded results were retained; "
+            "unfinished actions were not replayed, and pending approvals are no longer valid. "
+            "Check affected files, commands, MCP calls, and browser actions before sending a follow-up to continue."
+            if is_english else
+            "服务重启时此任务尚未结束，现已标记为中断。已记录的结果保留；未完成的动作没有重放，"
+            "原来的待审批已失效。请先检查相关文件、命令、MCP 调用和浏览器外部操作，"
+            "再发送后续要求继续任务。"
+        )
+        run.messages.append(ChatMessage(
+            role="assistant", content=notice,
+            metadata={"status": "interrupted", "reason": "service_restart"},
+        ))
+        if interrupted_actions:
+            run.messages.append(ChatMessage(
+                role="system",
+                content=(
+                    "Service restart recovery: actions with an interrupted result have unknown side effects. "
+                    "Do not automatically rerun unfinished commands, writes, MCP calls, or browser actions. "
+                    "A generic follow-up to continue is not confirmation that these actions are safe to retry. "
+                    "Ask the user to verify their effects and explicitly authorize a retry when needed. "
+                    "Preserve recorded successful results."
+                ),
+                metadata={"reason": "service_restart", "interrupted_action_ids": [
+                    action.id for action in interrupted_actions
+                ]},
+            ))
+        for step in run.workflow_steps:
+            if step.start_message_index in message_index_map:
+                step.start_message_index = message_index_map[step.start_message_index]
+            if step.status == "active":
+                step.status = "needs_review"
+        run.status = RunStatus.INTERRUPTED
+        store.save_run(run)
+        for action in interrupted_actions:
+            store.append_event(RunEvent(
+                type="action.interrupted", run_id=run.id, action_id=action.id,
+                title="Action interrupted" if is_english else "动作中断，结果待核实",
+                detail="No recorded final result; side effects are unknown. The action was not replayed.",
+                data={"tool_name": action.tool_name, "side_effects": "unknown", "replayed": False},
+            ))
+        store.append_event(RunEvent(
+            type="run.interrupted", run_id=run.id,
+            title="Task interrupted by service restart" if is_english else "服务重启，任务已中断",
+            detail=notice,
+            data={
+                "previous_status": previous_status.value,
+                "interrupted_action_ids": [action.id for action in interrupted_actions],
+                "automatic_resume": False,
+            },
+        ))
+        recovered_count += 1
+    return recovered_count
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    root = cli._project_root()
+    try:
+        settings = load_settings(root)
+    except FileNotFoundError:
+        # A fresh install or isolated test can start without configuration.
+        settings = None
+    except (OSError, ValueError, KeyError) as exc:
+        _LOGGER.warning("Cannot reconcile saved tasks because configuration is invalid: %s", type(exc).__name__)
+        settings = None
+    lease = data_lease(settings.data_root) if settings is not None else nullcontext()
+    with lease:
+        if settings is not None:
+            _interrupt_incomplete_runs(RunStore(settings.data_root))
+        try:
+            yield
+        finally:
+            await _computer_use_sessions.close_all()
+
+app = FastAPI(title="ClearAct Console", lifespan=_lifespan)
 _active_tasks: dict[str, asyncio.Task] = {}
 _active_runs: dict[str, Run] = {}
 _pending_approvals: dict[str, dict[str, Any]] = {}
@@ -314,16 +447,26 @@ def _rollback_discarded_effects(
     }
     restored: list[str] = []
     warnings: list[str] = []
-    virtual_files: dict[Path, str | None] = {}
+    virtual_files: dict[Path, bytes | None] = {}
     for message in reversed(run.messages[cutoff:]):
-        if message.role != "tool" or message.metadata.get("status") != "succeeded":
+        if message.role != "tool":
             continue
         action = actions.get(message.tool_call_id or "")
+        if message.metadata.get("status") != "succeeded":
+            if action and message.metadata.get("status") in {"failed", "cancelled", "interrupted"} and (
+                action.tool_name == "execute_command" or action.tool_name.startswith("mcp__")
+                or action.tool_name == "computer_use"
+                or action.tool_name in FILE_WRITE_TOOLS
+            ) and message.metadata.get("side_effects") != "none":
+                warnings.append(f"External effect may remain: {action.tool_name} ({action.id})")
+            continue
         snapshot_id = message.metadata.get("snapshot_id")
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
-                target, existed, before = snapshot_store.load_before_write(snapshot_id)
-                requested_path = action.arguments.get("path") if action and action.tool_name == "write_file" else None
+                target, existed, before = snapshot_store.load_before_write_bytes(snapshot_id)
+                requested_path = (
+                    action.arguments.get("path") if action and action.tool_name in FILE_WRITE_TOOLS else None
+                )
                 if not isinstance(requested_path, str) or snapshot_store.workspace_root is None:
                     warnings.append(f"Could not verify the write target of {snapshot_id}; left it unchanged")
                     continue
@@ -346,13 +489,18 @@ def _rollback_discarded_effects(
                     warnings.append(f"Snapshot path does not match the write action; left unchanged: {target}")
                     continue
                 expected = action.arguments.get("content") if action and action.tool_name == "write_file" else None
-                if not isinstance(expected, str):
+                expected_hash = message.metadata.get("content_sha256") if action.tool_name in OFFICE_TOOLS else None
+                if not isinstance(expected, str) and not isinstance(expected_hash, str):
                     warnings.append(f"Could not verify the current content of {target}; left it unchanged")
                     continue
                 current = virtual_files.get(target) if target in virtual_files else (
-                    target.read_text(encoding="utf-8") if target.is_file() else None
+                    target.read_bytes() if target.is_file() else None
                 )
-                if current != expected:
+                unchanged = current is not None and (
+                    hashlib.sha256(current).hexdigest() == expected_hash if isinstance(expected_hash, str)
+                    else current.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n") == expected
+                )
+                if not unchanged:
                     warnings.append(f"File changed after this action; left it unchanged: {target}")
                     continue
                 if not dry_run:
@@ -363,7 +511,8 @@ def _rollback_discarded_effects(
                 warnings.append(f"Could not restore {snapshot_id}: {exc}")
         elif action and (
             action.tool_name.startswith("mcp__")
-            or action.tool_name == "write_file"
+            or action.tool_name in FILE_WRITE_TOOLS
+            or action.tool_name == "execute_command"
             or (action.tool_name == "computer_use" and action.arguments.get("action") in {"click", "type", "press"})
         ):
             warnings.append(f"External effect may remain: {action.tool_name} ({action.id})")
@@ -406,11 +555,15 @@ def _resolve_rewind_boundary(
     return cutoff, step_index, target_id
 
 
-def _restored_file_contents(snapshot_store: SnapshotStore, snapshot_ids: list[str]) -> dict[Path, str | None]:
+def _restored_file_contents(snapshot_store: SnapshotStore, snapshot_ids: list[str]) -> dict[Path, str | bytes | None]:
     """Predict the final file contents after reversing discarded writes."""
-    contents: dict[Path, str | None] = {}
+    contents: dict[Path, str | bytes | None] = {}
     for snapshot_id in snapshot_ids:
-        target, existed, before = snapshot_store.load_before_write(snapshot_id)
+        target, existed, before_bytes = snapshot_store.load_before_write_bytes(snapshot_id)
+        try:
+            before: str | bytes = before_bytes.decode("utf-8")
+        except UnicodeError:
+            before = before_bytes
         contents[target] = before if existed else None
     return contents
 
@@ -438,7 +591,7 @@ def _rewind_preview_token(snapshot_ids: list[str], warnings: list[str]) -> str:
 
 
 def _retained_file_read_issues(
-    run: Run, cutoff: int, restored_contents: dict[Path, str | None]
+    run: Run, cutoff: int, restored_contents: dict[Path, str | bytes | None]
 ) -> dict[str, str]:
     """Identify changed or unverifiable local evidence in the retained branch."""
     issues: dict[str, str] = {}
@@ -460,7 +613,7 @@ def _retained_file_read_issues(
             issues[str(target)] = "unverified"
             continue
         later_retained_write = any(
-            later.role == "tool" and later.name == "write_file"
+            later.role == "tool" and later.name in FILE_WRITE_TOOLS
             and later.metadata.get("status") == "succeeded"
             and later.metadata.get("path") == str(target)
             for later in retained[index + 1:]
@@ -619,11 +772,6 @@ async def close_computer_use_session(session_id: str) -> dict[str, bool]:
     return {"closed": True}
 
 
-@app.on_event("shutdown")
-async def close_computer_use_sessions() -> None:
-    await _computer_use_sessions.close_all()
-
-
 @app.get("/api/settings")
 async def get_settings() -> dict:
     """Return editable settings without ever exposing provider API keys to the browser."""
@@ -673,6 +821,7 @@ async def update_settings(request: SettingsRequest) -> dict:
         "local_read",
         "web_read",
         "browser_interaction",
+        "command_execute",
         "workspace_create",
         "workspace_modify",
         "mcp_read",
@@ -1092,6 +1241,48 @@ async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
         "truncated": len(diff) > limit, "created": not existed, "source": "recorded_action",
         "outside_workspace": outside_workspace,
     }
+
+
+@app.get("/api/runs/{run_id}/actions/{action_id}/download")
+async def download_artifact(run_id: str, action_id: str) -> Response:
+    """Download only an unchanged Office output recorded by this task."""
+    settings = load_settings(cli._project_root())
+    try:
+        run = RunStore(settings.data_root).load_run(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    action = next((call for message in run.messages for call in message.tool_calls if call.id == action_id), None)
+    result = next((message for message in run.messages
+                   if message.role == "tool" and message.tool_call_id == action_id), None)
+    if not action or action.tool_name not in OFFICE_TOOLS:
+        raise HTTPException(status_code=404, detail="Generated file not found")
+    if not result or result.metadata.get("status") != "succeeded":
+        raise HTTPException(status_code=409, detail="File generation did not complete")
+    raw_path, recorded_path = action.arguments.get("path"), result.metadata.get("path")
+    expected_hash = result.metadata.get("content_sha256")
+    if not all(isinstance(value, str) and value for value in (raw_path, recorded_path, expected_hash)):
+        raise HTTPException(status_code=409, detail="Generated file has no verifiable record")
+    workspace = Path(run.execution.workdir or settings.workspace_root).resolve()
+    candidate = Path(raw_path).expanduser()
+    target = (candidate if candidate.is_absolute() else workspace / candidate).resolve()
+    if target != Path(recorded_path).resolve() or not target.is_relative_to(workspace):
+        raise HTTPException(status_code=403, detail="Generated file is outside its recorded workspace")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Generated file no longer exists")
+    if target.stat().st_size > 32 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File is too large for in-console download")
+    data = target.read_bytes()
+    if hashlib.sha256(data).hexdigest() != expected_hash:
+        raise HTTPException(status_code=409, detail="File changed after generation; inspect it in the workspace")
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if action.tool_name == "create_document" else
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return Response(content=data, media_type=media_type, headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(target.name)}",
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.post("/api/runs/{run_id}/approval")

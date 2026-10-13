@@ -12,6 +12,7 @@ _ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     },
     RunStatus.WAITING_APPROVAL: {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.FAILED, RunStatus.CANCELLED},
     RunStatus.PAUSED: {RunStatus.RUNNING, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.INTERRUPTED: set(),
     RunStatus.COMPLETED: set(),
     RunStatus.FAILED: set(),
     RunStatus.CANCELLED: set(),

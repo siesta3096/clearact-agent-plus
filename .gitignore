@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 .env
 clearact.json
+data/.clearact.lock
 data/runs/*
 !data/runs/.gitkeep
 data/checkpoints/*

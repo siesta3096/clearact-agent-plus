@@ -230,7 +230,9 @@ if (!running.includes('正在生成')) throw Error('Active planning lost its pro
 def test_reused_file_read_can_preview_original_result():
     script = (webapp._ASSET_DIR / "app.js").read_text(encoding="utf-8")
     start = script.index("function actionLayout(detail, actions) {")
-    function = script[start:script.index("\n}", start) + 2]
+    label_start = script.index("function actionDisplayName(name) {")
+    function = script[label_start:script.index("\n}", label_start) + 2]
+    function += script[start:script.index("\n}", start) + 2]
     scenario = """
 const language = 'zh', escape = (value) => String(value).replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const actionStatus = () => '已复用已有结果';

@@ -392,7 +392,8 @@ class ComputerUseTool:
             )
             content = "Entered text into the requested field. Inspect the page before the next action."
         elif action in {"press", "scroll", "back", "reload"}:
-            metadata = await session.control(action, **arguments)
+            control_arguments = {name: value for name, value in arguments.items() if name != "action"}
+            metadata = await session.control(action, **control_arguments)
             content = f"Browser action completed. Current page: {metadata['title']} — {metadata['url']}"
         else:
             raise ToolValidationError(f"Unsupported browser action: {action}")

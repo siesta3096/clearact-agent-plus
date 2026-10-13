@@ -43,6 +43,7 @@
       "local_read": "allow",
       "web_read": "allow",
       "workspace_create": "allow",
+      "command_execute": "ask",
       "workspace_modify": "allow",
       "mcp_read": "allow",
       "mcp_write": "ask",

@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import re
+
 from clearact.domain.models import ResearchStrategy, Run
 
 _NO_WEB = (
     "不要联网", "无需联网", "不需要联网", "不要搜索", "无需搜索", "不需要搜索", "不要上网",
+    "别联网", "别上网", "别搜索", "禁止联网", "禁止上网", "禁止搜索", "请勿联网", "请勿搜索",
+    "不用联网", "不联网", "不允许联网", "不得联网", "不要继续联网", "不要再联网",
+    "不要使用网络", "不使用网络", "不要使用互联网", "别用网络", "别用互联网",
     "只用本地", "仅用本地", "只用附件", "仅用附件", "offline", "without web", "no web",
     "do not browse the web", "don't browse the web", "do not search the web",
+    "don't search the web", "do not browse", "don't browse", "do not search", "don't search",
+    "do not use the internet", "don't use the internet", "do not use the web", "don't use the web",
+    "no internet", "without internet", "without the internet", "without browsing", "without searching",
+    "no online search", "no web search", "never browse", "never search",
+)
+# Quoted source material and conditional branches are not direct instructions.
+# Apostrophes within words remain intact, including don't / don't inside quotes.
+_QUOTED_TEXT = re.compile(
+    r"```[\s\S]*?```|`[^`]*`|\"[^\"]*\"|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"
+    r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)"
+)
+_CONDITIONAL_START = re.compile(
+    r"^(?:如果|若|假如|假设|要是|倘若|只有|除非|否则|仅在|当.+时|"
+    r"(?:if|unless|when|otherwise|in case|provided that)\b)"
 )
 _EXPLICIT_WEB = (
     "联网", "网络搜索", "网页搜索", "搜索网页", "搜索资料", "查找资料", "网站", "网页", "互联网",
@@ -38,6 +57,34 @@ def local_source_requested(text: str) -> bool:
     return any(term in text.casefold() for term in _LOCAL_SOURCE)
 
 
+def _instruction_text(text: str) -> str:
+    """Exclude quotations and whole conditional branches from intent matching.
+
+    Once a conditional clause starts, its comma-separated consequence also
+    remains conditional until a sentence/semicolon boundary. This is a small
+    deterministic heuristic, not a replacement for tool permission checks.
+    """
+    unquoted = _QUOTED_TEXT.sub(" ", text.casefold()).replace("’", "'")
+    direct_clauses: list[str] = []
+    for sentence in re.split(r"[。！？.!?;；\n]", unquoted):
+        for clause in re.split(r"[,，]", sentence):
+            clause = clause.strip()
+            if _CONDITIONAL_START.match(clause):
+                break
+            direct_clauses.append(clause)
+    return "\n".join(direct_clauses)
+
+
+def _no_web_requested(text: str) -> bool:
+    for term in _NO_WEB:
+        if term.isascii():
+            if re.search(rf"\b{re.escape(term)}\b", text):
+                return True
+        elif term in text:
+            return True
+    return False
+
+
 def classify_research_strategy(run: Run) -> ResearchStrategy:
     """Choose a conservative evidence strategy from the user's latest intent.
 
@@ -48,6 +95,8 @@ def classify_research_strategy(run: Run) -> ResearchStrategy:
     latest = (user_messages[-1].content or "").casefold() if user_messages else ""
     original = (run.goal or "").casefold()
     combined = f"{original}\n{latest}"
+    latest_instructions = _instruction_text(latest)
+    original_instructions = _instruction_text(original)
     attachments = [
         item
         for message in user_messages
@@ -59,13 +108,22 @@ def classify_research_strategy(run: Run) -> ResearchStrategy:
         for item in ((user_messages[-1].metadata.get("attachments") or []) if user_messages else [])
     )
     has_local = bool(attachments) or any(term in combined for term in _LOCAL)
-    latest_no_web = any(term in latest for term in _NO_WEB)
-    latest_web = any(term in latest for term in _EXPLICIT_WEB)
-    original_no_web = any(term in original for term in _NO_WEB)
-    original_web = any(term in original for term in _EXPLICIT_WEB)
+    latest_no_web = _no_web_requested(latest_instructions)
+    latest_web = any(term in latest_instructions for term in _EXPLICIT_WEB)
+    original_web = any(term in original_instructions for term in _EXPLICIT_WEB)
+    inherited_no_web = False
+    # A direct restriction in an intermediate turn survives a generic "continue"
+    # message. The latest explicit request to browse can still supersede it.
+    prior_instructions = [_instruction_text(message.content or "") for message in user_messages[:-1]]
+    for instructions in reversed([original_instructions, *prior_instructions]):
+        if _no_web_requested(instructions):
+            inherited_no_web = True
+            break
+        if any(term in instructions for term in _EXPLICIT_WEB):
+            break
     latest_local = any(term in latest for term in _LOCAL)
 
-    if latest_no_web or (original_no_web and not latest_web):
+    if latest_no_web or (inherited_no_web and not latest_web):
         return ResearchStrategy(mode="local_only", search_streak_limit=0, total_search_limit=0)
     if any(term in latest for term in _FINISH_FROM_EVIDENCE):
         return ResearchStrategy(mode="local_only", search_streak_limit=0, total_search_limit=0)

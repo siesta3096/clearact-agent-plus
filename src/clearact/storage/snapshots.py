@@ -37,27 +37,46 @@ class SnapshotStore:
         return snapshot_id
 
     def restore(self, snapshot_id: str) -> Path:
-        target, existed, content = self.load_before_write(snapshot_id)
+        target, existed, content = self.load_before_write_bytes(snapshot_id)
         if existed:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_bytes(content)
         elif target.exists():
             target.unlink()
         return target
 
     def load_before_write(self, snapshot_id: str) -> tuple[Path, bool, str]:
         """Read an audited before-image without changing the workspace."""
+        target, existed, content = self.load_before_write_bytes(snapshot_id)
+        return target, existed, content.decode("utf-8")
+
+    def save_before_write_bytes(self, path: Path, content: bytes | None, existed: bool) -> str:
+        snapshot_id = f"snapshot_{uuid4().hex[:12]}"
+        (self._root / f"{snapshot_id}.bin").write_bytes(content or b"")
+        (self._root / f"{snapshot_id}.json").write_text(
+            json.dumps({"id": snapshot_id, "path": str(path), "existed": existed,
+                        "format": "binary", "created_at": datetime.now().isoformat()},
+                       ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        return snapshot_id
+
+    def load_before_write_bytes(self, snapshot_id: str) -> tuple[Path, bool, bytes]:
+        """Load binary or legacy text before-images without altering them."""
         if not snapshot_id.startswith("snapshot_") or any(char in snapshot_id for char in "\\/"):
             raise ValueError("Invalid snapshot ID.")
         metadata_path = self._root / f"{snapshot_id}.json"
-        content_path = self._root / f"{snapshot_id}.txt"
-        if not metadata_path.is_file() or not content_path.is_file():
+        if not metadata_path.is_file():
             raise FileNotFoundError(snapshot_id)
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        binary = metadata.get("format") == "binary"
+        content_path = self._root / f"{snapshot_id}.{'bin' if binary else 'txt'}"
+        if not content_path.is_file():
+            raise FileNotFoundError(snapshot_id)
         target = Path(metadata["path"]).resolve()
         if self._workspace_root:
             try:
                 target.relative_to(self._workspace_root)
             except ValueError as exc:
                 raise ValueError("Snapshot target is outside the authorized workspace.") from exc
-        return target, bool(metadata["existed"]), content_path.read_text(encoding="utf-8")
+        content = content_path.read_bytes() if binary else content_path.read_text(encoding="utf-8").encode("utf-8")
+        return target, bool(metadata["existed"]), content

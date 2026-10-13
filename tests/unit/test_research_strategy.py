@@ -1,3 +1,5 @@
+import pytest
+
 from clearact.domain.models import ChatMessage, Run
 from clearact.runtime.research_strategy import classify_research_strategy
 
@@ -159,3 +161,90 @@ def test_finish_from_existing_evidence_overrides_old_research_goal():
 
     assert strategy.mode == "local_only"
     assert strategy.total_search_limit == 0
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "别联网，只根据我给的内容整理",
+        "禁止联网，先处理附件",
+        "请勿搜索，使用本地资料",
+        "不用联网，直接整理文档",
+        "不要使用互联网",
+        "Don't browse; use the attachment only.",
+        "Don’t search online. Summarize my files.",
+        "Do not use the internet for this report.",
+        "No internet access; use the workspace.",
+        "Work offline using local files.",
+    ],
+)
+def test_direct_no_web_variants_disable_search(instruction):
+    run = Run(
+        goal="调查最新行业资料",
+        messages=[ChatMessage(role="user", content=instruction)],
+    )
+
+    strategy = classify_research_strategy(run)
+
+    assert strategy.mode == "local_only"
+    assert strategy.total_search_limit == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "如果不能联网，就只用附件整理。",
+        "如果无法获取资料，不要联网。",
+        "If you cannot browse, use the attachment instead.",
+        "If the file is enough, don't search the web.",
+        "文档写着“不要联网”，请解释这句话。",
+        "解释一下 'don't browse the web' 的含义。",
+        "The document says \"no internet\". Explain that instruction.",
+        "Explain `do not browse` from the document.",
+        "Review a note containing:\n```\n不要联网\n```",
+        "Create a document titled no website limits.",
+    ],
+)
+def test_conditional_or_quoted_negation_is_not_a_direct_no_web_instruction(text):
+    strategy = classify_research_strategy(Run(goal=text))
+
+    assert strategy.mode != "local_only"
+    assert strategy.total_search_limit != 0
+
+
+def test_latest_web_request_can_override_previous_no_web_instruction():
+    run = Run(
+        goal="不要联网，整理本地文件",
+        messages=[
+            ChatMessage(role="user", content="不要联网，整理本地文件"),
+            ChatMessage(role="user", content="现在请联网核实最新规则"),
+        ],
+    )
+
+    assert classify_research_strategy(run).mode == "mixed"
+
+
+def test_intermediate_no_web_instruction_survives_a_generic_followup():
+    run = Run(
+        goal="联网调查最新行业资料",
+        messages=[
+            ChatMessage(role="user", content="联网调查最新行业资料"),
+            ChatMessage(role="user", content="别联网，接下来只整理我提供的资料"),
+            ChatMessage(role="user", content="继续完成报告"),
+        ],
+    )
+
+    assert classify_research_strategy(run).mode == "local_only"
+
+
+def test_newer_web_instruction_supersedes_an_intermediate_no_web_instruction():
+    run = Run(
+        goal="联网调查最新行业资料",
+        messages=[
+            ChatMessage(role="user", content="不要联网"),
+            ChatMessage(role="user", content="现在联网核实"),
+            ChatMessage(role="user", content="继续完成报告"),
+        ],
+    )
+
+    assert classify_research_strategy(run).mode == "research"

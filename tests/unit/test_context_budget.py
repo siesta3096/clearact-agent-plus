@@ -91,6 +91,27 @@ def test_compaction_keeps_latest_tool_outcome_when_user_follows_up():
     assert [message for message in selected if message.role == "user"] == [original, current]
 
 
+def test_compaction_preserves_intermediate_user_constraints_and_tool_protocol():
+    system = ChatMessage(role="system", content="Original system rules")
+    original = ChatMessage(role="user", content="Create a report from these files")
+    constraint = ChatMessage(role="user", content="不要覆盖已有文件，也不要联网。")
+    latest = ChatMessage(role="user", content="Continue the report")
+    latest_transaction = tool_transaction(2, text="Verified existing files", prefix="recent")
+    essential = [system, original, constraint, latest] + latest_transaction
+    required_size = ContextBudget(10_000, 0.5).estimate(essential, [])
+    messages = [system, original] + tool_transaction(text="x" * 20_000, prefix="old")
+    messages += [constraint] + [ChatMessage(role="assistant", content="x" * 4_000) for _ in range(8)]
+    messages += [latest] + latest_transaction
+    before = [message.model_dump() for message in messages]
+
+    selected, tools = ContextBuilder(ContextBudget(required_size * 2, 0.5)).build(messages, [], set())
+
+    assert selected == essential
+    assert [message for message in selected if message.role == "user"] == [original, constraint, latest]
+    assert [message.model_dump() for message in messages] == before
+    assert tools == []
+
+
 def test_compaction_accepts_essential_context_that_exactly_fits_without_inventing_messages():
     system = ChatMessage(role="system", content="Original instructions")
     goal = ChatMessage(role="user", content="Original goal")
@@ -130,14 +151,17 @@ def test_budget_excludes_unsent_metadata_but_counts_attachment_references():
     assert budget.exceeds([attached], [])
 
 
-@pytest.mark.parametrize("oversized", ["system", "original_goal", "latest_goal", "latest_transaction", "tools"])
+@pytest.mark.parametrize(
+    "oversized", ["system", "original_goal", "intermediate_goal", "latest_goal", "latest_transaction", "tools"]
+)
 def test_builder_fails_explicitly_when_essential_context_cannot_fit(oversized):
     messages = [ChatMessage(role="system", content="Original rules"), ChatMessage(role="user", content="Original goal")]
+    messages.append(ChatMessage(role="user", content="An intermediate constraint"))
     messages.append(ChatMessage(role="user", content="Current goal"))
     messages += tool_transaction()
     tools = []
-    if oversized in {"system", "original_goal", "latest_goal"}:
-        index = {"system": 0, "original_goal": 1, "latest_goal": 2}[oversized]
+    if oversized in {"system", "original_goal", "intermediate_goal", "latest_goal"}:
+        index = {"system": 0, "original_goal": 1, "intermediate_goal": 2, "latest_goal": 3}[oversized]
         messages[index].content = "x" * 20_000
     elif oversized == "latest_transaction":
         messages[-1].content = "x" * 20_000

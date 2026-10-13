@@ -4,6 +4,7 @@ from pathlib import Path
 
 from clearact.domain.enums import RiskLevel
 from clearact.domain.models import Action, RiskAssessment
+from clearact.tools.artifacts import FILE_WRITE_TOOLS
 
 
 class RiskEvaluator:
@@ -13,6 +14,11 @@ class RiskEvaluator:
         self._tool_risk_hints = tool_risk_hints or {}
 
     def assess(self, action: Action) -> RiskAssessment:
+        if action.tool_name == "execute_command":
+            return RiskAssessment(
+                level=RiskLevel.RED, hard_stop=True, category="command_execute",
+                reasons=["命令以本机用户权限运行，可能访问工作区之外或联网；不能自动撤销，必须确认。"],
+            )
         if action.tool_name == "computer_use":
             operation = action.arguments.get("action")
             target = str(action.arguments.get("target", "")).casefold()
@@ -74,7 +80,7 @@ class RiskEvaluator:
                 reasons=["第三方 MCP 工具未声明为只读；执行前按外部修改处理。"],
                 category="mcp_write",
             )
-        if action.tool_name == "write_file":
+        if action.tool_name in FILE_WRITE_TOOLS:
             return self._assess_write(action)
         if action.tool_name in {"delete_file", "execute_command"}:
             return RiskAssessment(

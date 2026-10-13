@@ -1,4 +1,8 @@
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from clearact.domain.enums import DecisionOutcome, RiskLevel
 from clearact.domain.errors import ToolValidationError
@@ -6,7 +10,7 @@ from clearact.domain.models import Action, UserPolicy
 from clearact.runtime.policy import PolicyEngine
 from clearact.runtime.risk import RiskEvaluator
 from clearact.tools.base import ToolContext
-from clearact.tools.computer_use import ComputerUseTool, _normalise_url, _redact_sensitive_url
+from clearact.tools.computer_use import BrowserSession, ComputerUseTool, _normalise_url, _redact_sensitive_url
 
 
 def test_browser_read_is_read_only_but_page_interaction_requires_approval(tmp_path):
@@ -62,3 +66,38 @@ def test_browser_inspection_redacts_url_tokens():
     assert _redact_sensitive_url("https://example.com/page?token=secret&q=public") == (
         "https://example.com/page?token=%5Bredacted%5D&q=public"
     )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "method", "expected_args", "expected_kwargs"),
+    [
+        ({"action": "press", "key": "Enter"}, "press", ("Enter",), {}),
+        ({"action": "scroll", "dx": -100, "dy": 5000}, "wheel", (-100, 1000), {}),
+        ({"action": "back"}, "go_back", (), {"wait_until": "domcontentloaded", "timeout": 15_000}),
+        ({"action": "reload"}, "reload", (), {"wait_until": "domcontentloaded", "timeout": 20_000}),
+    ],
+)
+def test_agent_control_actions_reach_browser_page(tmp_path, arguments, method, expected_args, expected_kwargs):
+    page = SimpleNamespace(
+        url="https://example.com/",
+        title=AsyncMock(return_value="Example"),
+        evaluate=AsyncMock(return_value="revision:1"),
+        go_back=AsyncMock(),
+        reload=AsyncMock(),
+        keyboard=SimpleNamespace(press=AsyncMock()),
+        mouse=SimpleNamespace(wheel=AsyncMock()),
+    )
+    session = BrowserSession(id="test", browser=None, context=None, page=page, allow_localhost=False)
+
+    async def resolve_session():
+        return session
+
+    original = dict(arguments)
+    context = ToolContext(tmp_path, computer_session_resolver=resolve_session)
+    result = asyncio.run(ComputerUseTool().execute(arguments, context, "act_control"))
+
+    assert result.ok
+    assert result.metadata["title"] == "Example"
+    target = page.keyboard if method == "press" else page.mouse if method == "wheel" else page
+    getattr(target, method).assert_awaited_once_with(*expected_args, **expected_kwargs)
+    assert arguments == original

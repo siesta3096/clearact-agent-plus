@@ -17,6 +17,7 @@ class RunStatus(StrEnum):
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
     PAUSED = "paused"
+    INTERRUPTED = "interrupted"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

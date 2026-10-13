@@ -14,6 +14,21 @@ tools:
     display_name: 更新文件
     progress_template: "正在更新：{path}"
     base_risk: green
+  execute_command:
+    stage: act
+    display_name: 执行命令
+    progress_template: "正在执行命令"
+    base_risk: red
+  create_document:
+    stage: act
+    display_name: 生成 Word 文档
+    progress_template: "正在生成：{path}"
+    base_risk: green
+  create_spreadsheet:
+    stage: act
+    display_name: 生成 Excel 工作簿
+    progress_template: "正在生成：{path}"
+    base_risk: green
   web_search:
     stage: collect
     display_name: 搜索公开资料

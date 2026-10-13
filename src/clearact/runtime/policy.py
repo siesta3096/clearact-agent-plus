@@ -1,13 +1,25 @@
 from clearact.domain.enums import DecisionOutcome
 from clearact.domain.models import PolicyDecision, RiskAssessment, UserPolicy
+from clearact.tools.artifacts import FILE_WRITE_TOOLS
 
 
 class PolicyEngine:
     def decide(self, assessment: RiskAssessment, policy: UserPolicy, tool_name: str | None = None) -> PolicyDecision:
         if tool_name in {"list_files", "read_file", "read_pdf"} and not policy.allow_read:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用本地读取操作。")
-        if tool_name == "write_file" and not policy.allow_write:
+        if tool_name in FILE_WRITE_TOOLS and not policy.allow_write:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用本地写入操作。")
+        if tool_name == "execute_command" and (
+            not all((policy.allow_read, policy.allow_write, policy.allow_web))
+            or any(policy.capability_rules.get(category) == "deny" for category in (
+                "local_read", "web_read", "workspace_create", "workspace_modify", "outside_write", "destructive",
+                "mcp_read", "mcp_write", "browser_interaction",
+            ))
+        ):
+            return PolicyDecision(
+                outcome=DecisionOutcome.DENY,
+                reason="通用命令无法保证只读、离线或路径隔离，不能绕过已关闭的能力。",
+            )
         if tool_name in {"web_search", "fetch_url"} and not policy.allow_web:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用联网操作。")
         if tool_name and tool_name.startswith("mcp__") and not policy.allow_web:
