@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 — 2026-10-16
+
+- Add optional declarative acceptance checks for files, successful tool calls and distinct opened
+  web sources. Count evidence from the current user turn across phases; search snippets, stale
+  files, reused results and planning markers do not satisfy new checks.
+- Verify recorded file content and bounded DOCX/XLSX core structure without executing commands,
+  calling a model or reading outside the current workspace. Preserve external edits.
+- Add terminal `needs_review` status when completion issues remain. Allow one bounded repair
+  opportunity for unmet checks when iteration budget permits; clear warnings after successful repair.
+  Failed or denied work alone does not trigger an extra model request or approval retry.
+- Persist per-condition results and completion events; show reports and honest status in Web/CLI.
+  Load legacy records and clear stale reports on follow-up without imposing earlier-turn checks.
+- Add acceptance regression scenarios and document the implementation, validation and remaining limits.
+
 ## 0.2.0 — 2026-10-13
 
 - Added explicitly approved command execution with argv input, workspace cwd, bounded stdout/stderr,

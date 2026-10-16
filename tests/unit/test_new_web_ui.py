@@ -60,3 +60,42 @@ if (html.includes('plan-loading') || !html.includes('inspect preserved results')
 '''
     subprocess.run(["node", "--eval", function_source(script, "planHtml") + scenario],
                    check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_acceptance_report_escapes_details_counts_results_and_hides_stale_report():
+    script = (webapp._ASSET_DIR / "app.js").read_text(encoding="utf-8")
+    scenario = '''
+let language = 'en';
+const escape = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+  .replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+const run = {status:'needs_review', completion_checks:[
+  {status:'passed',phase_title:'Document',detail:'report.docx'},
+  {status:'failed',phase_title:'<img>',detail:'<script>bad()</script>'},
+  {status:'unverified',phase_title:'Read',detail:'Access denied'}
+]};
+const html = acceptanceHtml({run});
+if (!html.includes('1 / 3 passed') || !html.includes('Unverified')) throw Error('Missing outcomes');
+if (html.includes('<script>') || html.includes('<img>')) throw Error('Unsafe report HTML');
+if (!html.includes('&lt;script&gt;')) throw Error('Details missing');
+language = 'zh';
+if (!acceptanceHtml({run}).includes('通过 1 / 3 项')) throw Error('Chinese label missing');
+run.status = 'created';
+if (acceptanceHtml({run}) !== '') throw Error('Stale report on followup');
+if (acceptanceHtml({run:{status:'completed'}}) !== '') throw Error('Legacy run compatibility');
+'''
+    subprocess.run(["node", "--eval", function_source(script, "acceptanceHtml") + scenario],
+                   check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_needs_review_without_plan_has_no_endless_spinner():
+    script = (webapp._ASSET_DIR / "app.js").read_text(encoding="utf-8")
+    scenario = '''
+const language = 'en';
+const html = planHtml({status:'needs_review',workflow_plan:[]});
+if (html.includes('plan-loading') || !html.includes('still need review'))
+  throw Error('Finished task still spins');
+'''
+    subprocess.run(["node", "--eval", function_source(script, "planHtml") + scenario],
+                   check=True, capture_output=True, text=True)

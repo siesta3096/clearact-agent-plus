@@ -90,10 +90,13 @@ def model_reasoning(run: Run, detail: str, stage: Stage, action_id: str | None =
 def completion_review_requested(
     run: Run, pending_titles: list[str], missing_paths: list[str], changed_paths: list[str] | None = None,
     unworked_titles: list[str] | None = None,
+    failed_checks: list[str] | None = None, unsuccessful_titles: list[str] | None = None,
 ) -> RunEvent:
     language = run.execution.interface_language or "zh"
     changed_paths = changed_paths or []
     unworked_titles = unworked_titles or []
+    failed_checks = failed_checks or []
+    unsuccessful_titles = unsuccessful_titles or []
     return RunEvent(
         type="completion.review_requested",
         run_id=run.id,
@@ -103,14 +106,18 @@ def completion_review_requested(
             f"未进入的计划阶段：{', '.join(pending_titles) or '无'}；待核对文件：{', '.join(missing_paths) or '无'}；"
             f"内容已变化：{', '.join(changed_paths) or '无'}；"
             f"尚无实际操作：{', '.join(unworked_titles) or '无'}。"
+            f"未通过验收：{'; '.join(failed_checks) or '无'}；失败阶段：{', '.join(unsuccessful_titles) or '无'}。"
             if language == "zh" else
             f"Unreached phases: {', '.join(pending_titles) or 'none'}; "
             f"files to verify: {', '.join(missing_paths) or 'none'}; "
             f"changed files: {', '.join(changed_paths) or 'none'}; "
             f"phases without actions: {', '.join(unworked_titles) or 'none'}."
+            f" Failed checks: {'; '.join(failed_checks) or 'none'}; "
+            f"unsuccessful phases: {', '.join(unsuccessful_titles) or 'none'}."
         ),
         data={"pending_titles": pending_titles, "missing_paths": missing_paths,
-              "changed_paths": changed_paths, "unworked_titles": unworked_titles},
+              "changed_paths": changed_paths, "unworked_titles": unworked_titles,
+              "failed_checks": failed_checks, "unsuccessful_titles": unsuccessful_titles},
     )
 
 
@@ -152,4 +159,7 @@ def model_recovered(run: Run, attempts: int) -> RunEvent:
 
 
 def run_completed(run: Run) -> RunEvent:
-    return RunEvent(type="run.completed", run_id=run.id, title="任务已完成", stage=Stage.DELIVER)
+    needs_review = run.status.value == "needs_review"
+    return RunEvent(type="run.completed", run_id=run.id,
+                    title="任务已结束，需核对" if needs_review else "任务已完成", stage=Stage.DELIVER,
+                    data={"status": run.status.value, "needs_review": needs_review})

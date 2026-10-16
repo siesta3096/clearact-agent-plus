@@ -13,6 +13,7 @@ from clearact.domain.enums import RiskLevel, RunStatus
 from clearact.domain.models import (
     Action,
     ChatMessage,
+    CompletionCheckResult,
     RiskAssessment,
     Run,
     RunEvent,
@@ -289,6 +290,48 @@ def test_history_marks_completed_topics_that_still_need_review(web_environment):
 
     run.workflow_steps[0].status = "completed"
     store.save_run(run)
+    assert asyncio.run(webapp.runs())[0]["needs_review"] is False
+
+
+def test_needs_review_report_survives_api_and_clears_before_followup(web_environment, monkeypatch):
+    _, store = web_environment
+    run = Run(
+        goal="Create a report", status=RunStatus.NEEDS_REVIEW,
+        messages=[ChatMessage(role="user", content="Create a report"),
+                  ChatMessage(role="assistant", content="Missing report")],
+        workflow_steps=[WorkflowStep(title="Report", summary="Generate report", status="needs_review",
+                                     start_message_index=0)],
+        completion_checks=[CompletionCheckResult(
+            plan_item_id="report", phase_title="Report", check_index=0,
+            type="file", status="failed", detail="Missing report.docx",
+        )],
+    )
+    store.save_run(run)
+    observed = []
+
+    async def execute(*args, run, **kwargs):
+        observed.append((run.status, list(run.completion_checks)))
+        run.status = RunStatus.COMPLETED
+        store.save_run(run)
+
+    monkeypatch.setattr(webapp.cli, "_run", execute)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=webapp.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            history = (await client.get("/api/runs")).json()
+            assert history[0]["status"] == "needs_review"
+            assert history[0]["needs_review"] is True
+            detail = await client.get(f"/api/runs/{run.id}")
+            assert detail.status_code == 200
+            assert detail.json()["run"]["completion_checks"][0]["detail"] == "Missing report.docx"
+            response = await client.post("/api/runs", json={"run_id": run.id, "goal": "Explain the failure"})
+            assert response.status_code == 202
+            await finish_run(run.id)
+
+    asyncio.run(scenario())
+    assert observed == [(RunStatus.CREATED, [])]
+    assert store.load_run(run.id).completion_checks == []
     assert asyncio.run(webapp.runs())[0]["needs_review"] is False
 
 

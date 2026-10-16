@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from clearact.domain.enums import DecisionOutcome, RiskLevel, RunStatus, Stage
 
@@ -55,6 +55,40 @@ class WorkflowStep(BaseModel):
     completed_at: datetime | None = None
 
 
+class CompletionCheck(BaseModel):
+    """Declarative checks; never execute code or inspect arbitrary external paths."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["file", "tool_success", "sources_opened"]
+    path: str | None = Field(default=None, min_length=1, max_length=1000)
+    format: Literal["auto", "docx", "xlsx"] = "auto"
+    tool_name: str | None = Field(default=None, min_length=1, max_length=128)
+    min_count: int = Field(default=1, ge=1, le=20, strict=True)
+
+    @model_validator(mode="after")
+    def validate_condition(self) -> Self:
+        if self.type == "file":
+            if not self.path or not self.path.strip() or "\x00" in self.path or self.tool_name or self.min_count != 1:
+                raise ValueError("File checks need a path and cannot contain tool/count conditions")
+        elif self.type == "tool_success":
+            if not self.tool_name or not self.tool_name.strip() or self.path or self.format != "auto":
+                raise ValueError("Tool checks need a tool_name and cannot contain file conditions")
+            if self.tool_name in {"declare_workflow_plan", "declare_workflow_step", "revise_workflow_plan"}:
+                raise ValueError("Planning markers are not task completion evidence")
+        elif self.path or self.tool_name or self.format != "auto":
+            raise ValueError("Source checks only accept min_count")
+        return self
+
+
+class CompletionCheckResult(BaseModel):
+    plan_item_id: str
+    phase_title: str
+    check_index: int
+    type: Literal["file", "tool_success", "sources_opened"]
+    status: Literal["passed", "failed", "unverified"]
+    detail: str
+
+
 class WorkflowPlanItem(BaseModel):
     """A planned phase. Cards are revealed only when execution reaches it."""
 
@@ -63,6 +97,7 @@ class WorkflowPlanItem(BaseModel):
     summary: str
     done_when: str | None = None
     kind: str = "general"
+    checks: list[CompletionCheck] = Field(default_factory=list, max_length=6)
 
 
 class WorkflowRevision(BaseModel):
@@ -156,6 +191,7 @@ class Run(BaseModel):
     workflow_steps: list[WorkflowStep] = Field(default_factory=list)
     workflow_plan: list[WorkflowPlanItem] = Field(default_factory=list)
     workflow_revisions: list[WorkflowRevision] = Field(default_factory=list)
+    completion_checks: list[CompletionCheckResult] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

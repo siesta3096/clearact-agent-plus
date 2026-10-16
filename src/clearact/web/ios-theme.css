@@ -565,6 +565,14 @@ body {
 :root[data-theme="dark"] .result-card .stage-card { border-color: #5a70a5; background: linear-gradient(145deg, #344a70, #293c5a 72%, #303c66); }
 .result-card .stage-title h3 { color: var(--blue); }
 .result-evidence { margin-top: 15px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 12px; }
+.acceptance-card { margin: 4px 0 8px 55px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); font-size: 12px; }
+.acceptance-card > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.acceptance-card > div > span { color: var(--ink-soft); }
+.acceptance-card ul { display: grid; gap: 12px; margin: 13px 0 0; padding: 0; list-style: none; }
+.acceptance-card li { display: flex; align-items: start; gap: 12px; }
+.acceptance-card li > strong { flex: none; color: var(--ink-soft); font-size: 11px; }
+.acceptance-card li > div { min-width: 0; overflow-wrap: anywhere; }
+.acceptance-card p { margin: 3px 0 0; color: var(--ink-soft); }
 .result-evidence > summary { display: flex; align-items: center; gap: 8px; padding: 12px 0 4px; color: var(--blue); cursor: pointer; font-weight: 700; }
 .result-evidence > summary span { padding: 2px 7px; border-radius: 999px; background: var(--surface-tint); color: var(--ink); font-size: 11px; }
 .result-evidence p { margin: 7px 0; line-height: 1.5; }

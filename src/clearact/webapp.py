@@ -995,6 +995,20 @@ async def test_mcp_server(server_name: str) -> dict:
         await manager.close()
 
 
+def _run_needs_review(run: Run) -> bool:
+    if run.status == RunStatus.NEEDS_REVIEW:
+        return True
+    if run.status != RunStatus.COMPLETED:
+        return False
+    current_turn = next((index for index in range(len(run.messages) - 1, -1, -1)
+                         if run.messages[index].role == "user"), -1)
+    return bool(run.stage_notes.get("completion_review")) or any(
+        step.status == "needs_review" and (
+            step.start_message_index is None or step.start_message_index >= current_turn
+        ) for step in run.workflow_steps
+    )
+
+
 @app.get("/api/runs")
 async def runs(limit: int = 30) -> list[dict]:
     if limit < 1 or limit > 100:
@@ -1006,10 +1020,7 @@ async def runs(limit: int = 30) -> list[dict]:
             "goal": run.goal,
             "title": run.title or run.goal[:28],
             "status": run.status.value,
-            "needs_review": run.status == RunStatus.COMPLETED and (
-                bool(run.stage_notes.get("completion_review"))
-                or any(step.status == "needs_review" for step in run.workflow_steps)
-            ),
+            "needs_review": _run_needs_review(run),
             "updated_at": run.updated_at.isoformat(),
         }
         for run in store.list_runs(limit)
@@ -1472,6 +1483,7 @@ async def start_run(request: StartRunRequest) -> dict:
                 },
             ))
         run.status = RunStatus.CREATED
+        run.completion_checks = []
         run.policy.autonomy_threshold = effective_autonomy
         run.policy.capability_rules.setdefault("browser_interaction", "ask")
         user_metadata: dict[str, Any] = {"attachments": attachments}

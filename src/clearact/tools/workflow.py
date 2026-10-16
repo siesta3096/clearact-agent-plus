@@ -3,6 +3,22 @@ from __future__ import annotations
 from clearact.domain.models import ToolDefinition, ToolResult
 from clearact.tools.base import ToolContext
 
+COMPLETION_CHECKS_SCHEMA = {
+    "type": "array", "maxItems": 6,
+    "description": "Optional checks backed by actual results in this user turn; do not invent extra requirements.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["file", "tool_success", "sources_opened"]},
+            "path": {"type": "string"},
+            "format": {"type": "string", "enum": ["auto", "docx", "xlsx"]},
+            "tool_name": {"type": "string"},
+            "min_count": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
+        "required": ["type"], "additionalProperties": False,
+    },
+}
+
 
 class DeclareWorkflowPlanTool:
     """Let the model publish a task-specific plan before external work starts."""
@@ -39,6 +55,7 @@ class DeclareWorkflowPlanTool:
                                         "One concrete, user-visible condition for judging this phase complete."
                                     ),
                                 },
+                                "checks": COMPLETION_CHECKS_SCHEMA,
                                 "kind": {
                                     "type": "string",
                                     "enum": ["research", "analysis", "files", "external", "general"],
@@ -127,6 +144,7 @@ class ReviseWorkflowPlanTool:
                                 "title": {"type": "string"},
                                 "summary": {"type": "string"},
                                 "done_when": {"type": "string"},
+                                "checks": COMPLETION_CHECKS_SCHEMA,
                                 "kind": {"type": "string"},
                             },
                             "required": ["id", "title", "summary"],

@@ -19,6 +19,7 @@ class RunStatus(StrEnum):
     PAUSED = "paused"
     INTERRUPTED = "interrupted"
     COMPLETED = "completed"
+    NEEDS_REVIEW = "needs_review"
     FAILED = "failed"
     CANCELLED = "cancelled"
 

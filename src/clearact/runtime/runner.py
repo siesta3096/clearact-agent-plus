@@ -9,14 +9,16 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import DecisionOutcome, RunStatus, Stage
 from clearact.domain.errors import ToolValidationError
-from clearact.domain.models import Action, ChatMessage, Run, RunEvent, WorkflowPlanItem, WorkflowStep
+from clearact.domain.models import Action, ChatMessage, CompletionCheck, Run, RunEvent, WorkflowPlanItem, WorkflowStep
 from clearact.providers.base import LLMProvider
 from clearact.runtime.approvals import ApprovalGate
 from clearact.runtime.checkpoints import create_checkpoint
+from clearact.runtime.completion import evaluate_completion_checks
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.events import (
     action_completed,
@@ -131,6 +133,7 @@ class AgentRunner:
     async def _run_loop(self, run: Run) -> str:
         transition(run, RunStatus.RUNNING)
         run.stage_notes.pop("completion_review", None)
+        run.completion_checks = []
         run.research_strategy = classify_research_strategy(run)
         self._run_store.save_run(run)
         await self._event_bus.publish(run_started(run))
@@ -218,9 +221,21 @@ class AgentRunner:
                 pending = self._unreached_plan_items(run) if review_new_plan else []
                 missing = self._missing_written_files(run)
                 changed = self._changed_written_files(run)
-                unworked = self._unworked_phase_titles(run)
+                run.completion_checks = await asyncio.to_thread(
+                    evaluate_completion_checks, run, self._tool_context, include_unreached=review_new_plan,
+                )
+                passed_phases = {
+                    item.plan_item_id for item in run.completion_checks
+                    if all(result.status == "passed" for result in run.completion_checks
+                           if result.plan_item_id == item.plan_item_id)
+                }
+                unworked = self._unworked_phase_titles(run, passed_phases)
+                failed_checks = [f"{item.phase_title}：{item.detail}" for item in run.completion_checks
+                                 if item.status != "passed"]
+                unsuccessful = self._unsuccessful_phase_titles(run, passed_phases)
+                needs_review = bool(pending or missing or changed or unworked or failed_checks or unsuccessful)
                 if (
-                    (pending or missing or changed or unworked)
+                    (pending or missing or changed or unworked or failed_checks)
                     and not completion_review_sent
                     and iteration + 1 < self._max_iterations
                 ):
@@ -234,6 +249,8 @@ class AgentRunner:
                             f"Written files no longer present: {', '.join(missing) or 'none'}. "
                             f"Written files changed since the last agent write: {', '.join(changed) or 'none'}. "
                             f"Declared work phases with no actions: {', '.join(unworked) or 'none'}. "
+                            f"Phases without successful work: {', '.join(unsuccessful) or 'none'}. "
+                            f"Failed acceptance checks: {'; '.join(failed_checks) or 'none'}. "
                             "Continue any necessary work with the available tools, or explicitly explain "
                             "why a planned phase is no longer needed. Do not overwrite external edits without "
                             "permission; disclose them if they prevent completion. Verify files before claiming "
@@ -241,16 +258,19 @@ class AgentRunner:
                             "Then give an honest final answer."
                         ),
                     )
+                    self._run_store.save_run(run)
                     await self._event_bus.publish(completion_review_requested(
-                        run, pending_titles, missing, changed, unworked,
+                        run, pending_titles, missing, changed, unworked, failed_checks, unsuccessful,
                     ))
                     continue
-                if pending or missing or changed or unworked:
+                if needs_review:
                     warning = (
                         (f"未进入计划阶段：{', '.join(item.title for item in pending)}。" if pending else "")
                         + (f"未找到已写文件：{', '.join(missing)}。" if missing else "")
                         + (f"已写文件内容发生变化：{', '.join(changed)}。" if changed else "")
                         + (f"阶段尚无实际操作：{', '.join(unworked)}。" if unworked else "")
+                        + (f"阶段操作未成功：{', '.join(unsuccessful)}。" if unsuccessful else "")
+                        + (f"验收未通过：{'; '.join(failed_checks)}。" if failed_checks else "")
                     )
                     run.stage_notes["completion_review"] = warning
                 else:
@@ -258,13 +278,23 @@ class AgentRunner:
                 final = response.content
                 run.messages.append(ChatMessage(role="assistant", content=final, reasoning_content=reasoning))
                 self._complete_active_step(run)
+                for step in run.workflow_steps:
+                    related = [item for item in run.completion_checks if item.plan_item_id == step.plan_item_id]
+                    if related:
+                        step.status = "completed" if step.plan_item_id in passed_phases else "needs_review"
                 # Save before publishing so a polling UI never sees an event
                 # whose referenced reasoning is absent from the run ledger.
                 self._run_store.save_run(run)
                 if reasoning:
                     await self._event_bus.publish(model_reasoning(run, reasoning, Stage.DELIVER))
-                transition(run, RunStatus.COMPLETED)
+                transition(run, RunStatus.NEEDS_REVIEW if needs_review else RunStatus.COMPLETED)
                 self._run_store.save_run(run)
+                await self._event_bus.publish(RunEvent(
+                    type="completion.checked", run_id=run.id,
+                    title="验收需核对" if needs_review else "完成核对通过",
+                    data={"needs_review": needs_review,
+                          "checks": [item.model_dump(mode="json") for item in run.completion_checks]},
+                ))
                 await self._event_bus.publish(run_completed(run))
                 return final
 
@@ -618,7 +648,7 @@ class AgentRunner:
         return [item for item in run.workflow_plan if item.id not in reached]
 
     @staticmethod
-    def _unworked_phase_titles(run: Run) -> list[str]:
+    def _unworked_phase_titles(run: Run, passed_phases: set[str] | None = None) -> list[str]:
         current_turn = next(
             (index for index in range(len(run.messages) - 1, -1, -1) if run.messages[index].role == "user"),
             -1,
@@ -630,7 +660,27 @@ class AgentRunner:
             and not step.action_ids
             and step.start_message_index is not None
             and step.start_message_index >= current_turn
+            and step.plan_item_id not in (passed_phases or set())
         ]
+
+    @staticmethod
+    def _unsuccessful_phase_titles(run: Run, passed_phases: set[str]) -> list[str]:
+        current_turn = next((index for index in range(len(run.messages) - 1, -1, -1)
+                             if run.messages[index].role == "user"), -1)
+        titles = []
+        for step in run.workflow_steps:
+            if step.start_message_index is None or step.start_message_index < current_turn:
+                continue
+            if step.plan_item_id in passed_phases:
+                continue
+            outcomes = [message.metadata.get("status") for message in run.messages
+                        if message.role == "tool" and message.tool_call_id in step.action_ids]
+            if (step.status == "needs_review" and step.action_ids) or (
+                any(status in {"failed", "denied", "cancelled", "interrupted"} for status in outcomes)
+                and not any(status == "succeeded" for status in outcomes)
+            ):
+                titles.append(step.title)
+        return titles
 
     @staticmethod
     def _missing_written_files(run: Run) -> list[str]:
@@ -1379,6 +1429,13 @@ class AgentRunner:
             item_id = raw_id[:64]
             if not title or not summary or item_id in seen:
                 return []
+            raw_checks = value.get("checks", [])
+            if not isinstance(raw_checks, list) or len(raw_checks) > 6:
+                return []
+            try:
+                checks = [CompletionCheck.model_validate(check) for check in raw_checks]
+            except ValidationError:
+                return []
             seen.add(item_id)
             planned.append(
                 WorkflowPlanItem(
@@ -1387,6 +1444,7 @@ class AgentRunner:
                     summary=summary[:500],
                     done_when=done_when[:240] or None,
                     kind=raw_kind[:24],
+                    checks=checks,
                 )
             )
         return planned
@@ -1484,7 +1542,7 @@ class AgentRunner:
                     for message in run.messages
                     if message.role == "tool" and message.tool_call_id in step.action_ids
                 ]
-                blocked = {"failed", "denied", "cancelled"}
+                blocked = {"failed", "denied", "cancelled", "interrupted"}
                 unworked_external_phase = step.kind in {"research", "files", "external"} and not step.action_ids
                 step.status = (
                     "needs_review"

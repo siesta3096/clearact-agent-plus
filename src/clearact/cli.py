@@ -10,7 +10,7 @@ from rich.console import Console
 
 from clearact.context.budget import ContextBudget
 from clearact.context.builder import ContextBuilder
-from clearact.domain.enums import RiskLevel
+from clearact.domain.enums import RiskLevel, RunStatus
 from clearact.domain.models import ChatMessage, Run, UserPolicy
 from clearact.providers.ollama import OllamaProvider
 from clearact.providers.openai_compatible import OpenAICompatibleProvider
@@ -284,6 +284,9 @@ async def _run_impl(
     try:
         final = await runner.run(run)
         if render_console:
+            if run.status == RunStatus.NEEDS_REVIEW:
+                console.print("[yellow]任务已结束，部分条件仍需核对：[/yellow]")
+                console.print(run.stage_notes.get("completion_review", "请核对任务结果。"))
             renderer.print_final(final)
     finally:
         await mcp_manager.close()

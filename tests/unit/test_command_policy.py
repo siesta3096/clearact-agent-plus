@@ -146,7 +146,8 @@ def test_command_allow_rule_and_any_autonomy_still_require_real_approval(workspa
     assert not (workspace / "unapproved.txt").exists()
     outcome = next(message for message in run.messages if message.role == "tool")
     assert outcome.metadata["status"] == "denied"
-    assert run.status is RunStatus.COMPLETED
+    assert run.status is RunStatus.NEEDS_REVIEW
+    assert len(provider.offered_tools) == 2  # Do not ask again after a denied operation.
 
 
 def test_runner_requires_a_separate_approval_for_each_command(workspace):
