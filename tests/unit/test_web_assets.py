@@ -128,7 +128,7 @@ def test_transient_status_banners_ignore_previous_user_turns():
     start = script.index("function currentTurnEvents(detail) {")
     event_function = script[start:script.index("\n}", start) + 2]
     start = script.index("function connectionHtml(detail) {")
-    connection_function = script[start:script.index("\n", start)]
+    connection_function = script[start:script.index("\n}", start) + 2]
     start = script.index("function completionReviewHtml(detail) {")
     review_function = script[start:script.index("\n}", start) + 2]
     scenario = """
@@ -218,7 +218,8 @@ def test_failed_run_without_plan_does_not_show_endless_planning_spinner():
     scenario = """
 const language = 'zh';
 const failed = planHtml({status: 'failed', workflow_plan: []});
-if (!failed.includes('未能生成任务步骤')) throw Error('Failed plan is not explained');
+if (!failed.includes('失败原因') || failed.includes('工具调用配置'))
+  throw Error('Failed planning incorrectly blamed tool setup');
 if (failed.includes('正在生成') || failed.includes('<i>')) throw Error('Failed run still shows a spinner');
 const running = planHtml({status: 'running', workflow_plan: []});
 if (!running.includes('正在生成')) throw Error('Active planning lost its progress state');

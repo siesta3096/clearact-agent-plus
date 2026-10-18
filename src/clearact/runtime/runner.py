@@ -746,13 +746,19 @@ class AgentRunner:
         failures = 0
         while True:
             try:
+                await self._event_bus.publish(RunEvent(
+                    type="model.waiting", run_id=run.id,
+                    title=("正在等待模型答复" if run.execution.interface_language != "en"
+                           else "Waiting for model response"),
+                    data={"timeout_seconds": getattr(self._provider, "request_timeout_seconds", None)},
+                ))
                 response = await self._provider.chat(messages, tools)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 failures += 1
                 if not is_transient_model_error(exc):
-                    if isinstance(exc, httpx.HTTPStatusError):
+                    if isinstance(exc, httpx.HTTPStatusError | httpx.ReadTimeout):
                         language = run.execution.interface_language or "zh"
                         raise ModelRequestError(describe_model_error(exc, language)) from exc
                     raise
@@ -785,6 +791,10 @@ class AgentRunner:
                 )
                 await asyncio.sleep(delay)
                 continue
+            await self._event_bus.publish(RunEvent(
+                type="model.responded", run_id=run.id,
+                title="已收到模型答复" if run.execution.interface_language != "en" else "Model response received",
+            ))
             if failures:
                 self._run_store.save_run(run)
                 await self._event_bus.publish(model_recovered(run, failures + 1))

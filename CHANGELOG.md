@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.4 — 2026-10-18
+
+- Replace the fixed 90-second model timeout with per-profile `requestTimeoutSeconds` (default
+  600 seconds, range 1–7200). Keep connection, write and pool timeouts separate from generation waits.
+- Stop automatically resending a generation after `ReadTimeout`; explain that the backend may
+  still be running. Preserve bounded retries for connection failures and transient service errors.
+- Expose the wait setting in Web, record waiting/received events and show a waiting banner while
+  a response is pending. Preserve cancellation and successful tool results.
+- Show warning markers for failed results and avoid attributing every planning failure to tool setup.
+- Add timeout/configuration/cancellation regressions and verify a real delayed HTTP response beyond
+  90 seconds, with a single request and no model or user-file side effects.
+
 ## 0.2.3 — 2026-10-18
 
 - Fix stage restart silently doing nothing when feedback is empty. Blank or whitespace feedback

@@ -10,6 +10,7 @@ import yaml
 from pydantic import AliasChoices, BaseModel, Field
 
 from clearact.domain.enums import RiskLevel, ViewMode
+from clearact.providers.transport import DEFAULT_REQUEST_TIMEOUT_SECONDS, validate_request_timeout
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?::([^}]*))?\}")
 
@@ -73,6 +74,9 @@ def _model_settings(config: dict[str, Any]) -> dict[str, Any]:
         profile = dict(raw_profile)
         profile["base_url"] = profile.pop("baseUrl")
         profile["context_window"] = profile.pop("contextWindow")
+        profile["request_timeout_seconds"] = validate_request_timeout(
+            profile.pop("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS)
+        )
         profile["api_key"] = profile.pop("apiKey", "")
         if "apiKeyEnv" in profile:
             profile["api_key_env"] = profile.pop("apiKeyEnv")

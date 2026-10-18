@@ -43,12 +43,15 @@ def test_settings_endpoint_hides_api_keys_and_updates_safe_fields(tmp_path, monk
         max_iterations=20,
         max_tool_calls=30,
         default_profile="demo",
-        profiles={"demo": {"model": "new", "baseUrl": "http://localhost:2", "contextWindow": 20}},
+        profiles={"demo": {"model": "new", "baseUrl": "http://localhost:2", "contextWindow": 20,
+                           "requestTimeoutSeconds": 1800}},
     )
     assert asyncio.run(webapp.update_settings(request)) == {"saved": True}
     saved = json.loads((tmp_path / "clearact.json").read_text(encoding="utf-8"))
     assert saved["profiles"]["demo"]["apiKey"] == "secret"
     assert saved["profiles"]["demo"]["model"] == "new"
+    assert saved["profiles"]["demo"]["requestTimeoutSeconds"] == 1800
+    assert asyncio.run(webapp.get_settings())["profiles"]["demo"]["requestTimeoutSeconds"] == 1800
 
 
 def test_mcp_import_accepts_standard_shape_and_hides_secrets(tmp_path, monkeypatch):

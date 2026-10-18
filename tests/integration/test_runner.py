@@ -954,7 +954,7 @@ def test_runner_retries_transient_model_disconnect_and_keeps_run_active(workspac
         provider = FlakyProvider(
             [
                 httpx.RemoteProtocolError("server disconnected", request=request),
-                httpx.ReadTimeout("timed out", request=request),
+                httpx.ConnectTimeout("timed out connecting", request=request),
                 LLMResponse(content="recovered"),
             ]
         )

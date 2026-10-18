@@ -26,6 +26,8 @@ ClearAct 是一个本地优先、可审查的轻量 Agent Runtime。模型只能
 
 ## 最近更新（2026-10-18）
 
+2026-10-18（0.2.4）：修复长时间生成时 Agent 提前超时、后台却继续输出的问题。模型读取等待默认由 90 秒改为 600 秒，可在设置中按模型调整；读取超时后不再自动重发同一生成请求。界面展示等待状态，收到答复后继续执行。超过旧上限的实际 HTTP 验证见 [等待超时修复记录](docs/maintenance-2026-10-18-timeout.md)。
+
 2026-10-18（0.2.3）：修复“从此阶段重新执行”在反馈留空时点击无响应。反馈改为可选，留空按原要求重试，仍先展示范围预览并等待确认；增加检查状态、按钮旁错误提示与防重复提交。刷新后的真实浏览器流程验证见 [重跑按钮修复记录](docs/maintenance-2026-10-18-restart.md)。
 
 2026-10-18（0.2.2）：修复本地模型在计划生成后因系统提示位置不兼容而返回 HTTP 400 的问题。OpenAI-compatible 和 Ollama 请求在发送前将系统提示合并到开头，保留用户/工具顺序和原始记录；补充具体错误提示，并明确规划后应开始哪个阶段。问题复现及实际本地模型验证见 [本轮修复记录](docs/maintenance-2026-10-18.md)。
@@ -90,7 +92,7 @@ python -m clearact.cli run "列出当前工作区文件"
 
 运行配置集中在根目录唯一的 `clearact.json`，无需在多个文件间跳转：
 
-- `defaultProfile` 与 `profiles`：模型、服务商、`baseUrl`、`apiKey`、上下文窗口，以及可选的 `apiKeyEnv`；
+- `defaultProfile` 与 `profiles`：模型、服务商、`baseUrl`、`apiKey`、上下文窗口，以及可选的 `apiKeyEnv`、`requestTimeoutSeconds`；后者为模型无数据读取等待上限，默认 600 秒，可设 1—7200 秒，也可在设置页按模型修改。它与单次工具超时独立；
 - `workspace.defaultRoot`：未指定 `--workdir` 时的默认目录；
 - `network.allowLocalhost`：是否允许 Agent 访问 `localhost`、`127.0.0.1` 和 `::1`；默认 `true`；
 - `agent.maxIterations`、`agent.maxToolCallsPerRun`、`agent.toolTimeoutSeconds`：全局任务预算；

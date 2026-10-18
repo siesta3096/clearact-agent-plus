@@ -6,6 +6,7 @@
       "model": "qwen2.5:7b",
       "baseUrl": "http://localhost:11434",
       "contextWindow": 32768,
+      "requestTimeoutSeconds": 600,
       "capabilities": {
         "toolCalling": "native",
         "streaming": true,
@@ -18,6 +19,7 @@
       "baseUrl": "https://api.example.com/v1",
       "apiKeyEnv": "OPENAI_API_KEY",
       "contextWindow": 32768,
+      "requestTimeoutSeconds": 600,
       "capabilities": {
         "toolCalling": "native",
         "streaming": true,

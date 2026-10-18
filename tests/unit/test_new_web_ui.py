@@ -182,3 +182,27 @@ let restartAtStage = async () => { calls++; await new Promise((resolve) => { fin
 '''
     subprocess.run(["node", "--eval", function_source(script, "submitStageRestart") + scenario],
                    check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_model_wait_banner_shows_budget_and_clears_on_response_or_stop():
+    script = (webapp._ASSET_DIR / "app.js").read_text(encoding="utf-8")
+    scenario = r'''
+const language = 'en', escape = (value) => String(value).replaceAll('<','&lt;');
+const currentTurnEvents = (detail) => detail.events;
+const detail = {run:{status:'running'},events:[
+  {type:'model.retrying',title:'Old retry'},
+  {type:'model.waiting',title:'Waiting for model response',data:{timeout_seconds:1800}}
+]};
+let html = connectionHtml(detail);
+if (!html.includes('1800s') || !html.includes('Waiting for the complete response'))
+  throw Error('Missing model wait limit or waiting explanation');
+if (html.includes('Old retry')) throw Error('Waiting misrepresented as repeated generation');
+detail.events.push({type:'model.responded'});
+if (connectionHtml(detail)) throw Error('Waiting banner remained after receiving the response');
+detail.events.push({type:'model.waiting',title:'Waiting',data:{timeout_seconds:600}});
+detail.run.status = 'cancelled';
+if (connectionHtml(detail)) throw Error('Stopped task still shows waiting');
+'''
+    subprocess.run(["node", "--eval", function_source(script, "connectionHtml") + scenario],
+                   check=True, capture_output=True, text=True)

@@ -14,6 +14,7 @@ from clearact.domain.enums import RiskLevel, RunStatus
 from clearact.domain.models import ChatMessage, Run, UserPolicy
 from clearact.providers.ollama import OllamaProvider
 from clearact.providers.openai_compatible import OpenAICompatibleProvider
+from clearact.providers.transport import DEFAULT_REQUEST_TIMEOUT_SECONDS
 from clearact.runtime.approvals import ApprovalGate
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.executor import ToolExecutor
@@ -54,7 +55,10 @@ def _build_provider(profile: dict):
         api_key_env = profile.get("api_key_env")
         api_key = os.getenv(api_key_env, "") if api_key_env else ""
         api_key = api_key or profile.get("api_key", "")
-        return OllamaProvider(model=profile["model"], base_url=profile["base_url"], api_key=api_key)
+        return OllamaProvider(
+            model=profile["model"], base_url=profile["base_url"], api_key=api_key,
+            request_timeout_seconds=profile.get("request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
+        )
     if provider == "openai_compatible":
         # Environment variables intentionally win, so secrets can stay outside clearact.json in CI/Docker.
         api_key_env = profile.get("api_key_env")
@@ -63,7 +67,10 @@ def _build_provider(profile: dict):
         if not api_key:
             location = f"environment variable {api_key_env} or " if api_key_env else ""
             raise RuntimeError(f"Missing API key. Set {location}apiKey in clearact.json.")
-        return OpenAICompatibleProvider(profile["model"], profile["base_url"], api_key)
+        return OpenAICompatibleProvider(
+            profile["model"], profile["base_url"], api_key,
+            request_timeout_seconds=profile.get("request_timeout_seconds", DEFAULT_REQUEST_TIMEOUT_SECONDS),
+        )
     raise ValueError(f"Unsupported provider: {provider}")
 
 

@@ -5,13 +5,18 @@ import httpx
 from clearact.domain.models import Action, ChatMessage, LLMResponse, ToolDefinition
 from clearact.providers.attachments import ollama_message_payload
 from clearact.providers.messages import system_first_messages
+from clearact.providers.transport import DEFAULT_REQUEST_TIMEOUT_SECONDS, model_timeout, validate_request_timeout
 
 
 class OllamaProvider:
-    def __init__(self, model: str, base_url: str, api_key: str = "") -> None:
+    def __init__(
+        self, model: str, base_url: str, api_key: str = "",
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self.request_timeout_seconds = validate_request_timeout(request_timeout_seconds)
 
     @staticmethod
     def _message_payload(message: ChatMessage) -> dict:
@@ -30,7 +35,7 @@ class OllamaProvider:
             "tools": [{"type": "function", "function": tool.model_dump()} for tool in tools],
         }
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(timeout=model_timeout(self.request_timeout_seconds)) as client:
             response = await client.post(f"{self._base_url}/api/chat", json=payload, headers=headers)
             response.raise_for_status()
         data = response.json()

@@ -7,13 +7,18 @@ import httpx
 from clearact.domain.models import Action, ChatMessage, LLMResponse, ToolDefinition
 from clearact.providers.attachments import openai_message_payload
 from clearact.providers.messages import system_first_messages
+from clearact.providers.transport import DEFAULT_REQUEST_TIMEOUT_SECONDS, model_timeout, validate_request_timeout
 
 
 class OpenAICompatibleProvider:
-    def __init__(self, model: str, base_url: str, api_key: str) -> None:
+    def __init__(
+        self, model: str, base_url: str, api_key: str,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self.request_timeout_seconds = validate_request_timeout(request_timeout_seconds)
 
     async def summarize_stage(self, instruction: str, goal: str) -> str:
         """Generate a public process summary without exposing private reasoning traces."""
@@ -25,7 +30,7 @@ class OpenAICompatibleProvider:
             ],
         }
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(timeout=model_timeout(self.request_timeout_seconds)) as client:
             response = await client.post(f"{self._base_url}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
         return response.json()["choices"][0]["message"].get("content") or ""
@@ -57,7 +62,7 @@ class OpenAICompatibleProvider:
             "tools": [{"type": "function", "function": tool.model_dump()} for tool in tools],
         }
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(timeout=model_timeout(self.request_timeout_seconds)) as client:
             response = await client.post(f"{self._base_url}/chat/completions", json=payload, headers=headers)
             # Most reasoning-capable compatible APIs expect returned reasoning
             # in tool-call history. Some strict APIs reject the non-standard

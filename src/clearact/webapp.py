@@ -36,6 +36,7 @@ from clearact.domain.models import (
     WorkflowRevision,
     new_id,
 )
+from clearact.providers.transport import validate_request_timeout
 from clearact.runtime.model_retry import ModelRequestError
 from clearact.runtime.prompting import system_prompt
 from clearact.settings import load_settings
@@ -809,7 +810,12 @@ async def update_settings(request: SettingsRequest) -> dict:
     for name, update in request.profiles.items():
         if name not in raw["profiles"]:
             raise HTTPException(status_code=422, detail=f"Unknown profile: {name}")
-        for key in ("provider", "model", "baseUrl", "contextWindow"):
+        if "requestTimeoutSeconds" in update:
+            try:
+                update["requestTimeoutSeconds"] = validate_request_timeout(update["requestTimeoutSeconds"])
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        for key in ("provider", "model", "baseUrl", "contextWindow", "requestTimeoutSeconds"):
             if key in update and update[key] is not None:
                 raw["profiles"][name][key] = update[key]
         # API Key：非空则更新，空或缺失则保留原值

@@ -31,7 +31,8 @@ def test_ollama_provider_translates_native_tool_calls(monkeypatch):
 
     class FakeAsyncClient:
         def __init__(self, *, timeout):
-            assert timeout == 90
+            assert timeout.read == 600
+            assert timeout.connect == 10
 
         async def __aenter__(self):
             return self

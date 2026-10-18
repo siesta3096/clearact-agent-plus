@@ -21,6 +21,8 @@ _RETRYABLE_TRANSPORT_ERRORS = (
 
 
 def is_transient_model_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.ReadTimeout):
+        return False  # Generation may still be running; another POST can queue a duplicate job.
     if isinstance(exc, _RETRYABLE_TRANSPORT_ERRORS):
         return True
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in _RETRYABLE_STATUS_CODES
@@ -69,6 +71,14 @@ def describe_model_error(exc: Exception, language: str = "zh") -> str:
                 if language == "zh"
                 else f"The model service is temporarily unavailable (HTTP {status})"
             )
+    if isinstance(exc, httpx.ReadTimeout):
+        return (
+            "等待模型完整答复超时；后台可能仍在生成，本次未自动重发。"
+            "请先核对后台任务，再在模型设置中增加单次等待时间"
+            if language == "zh" else
+            "Timed out waiting for the complete model response; generation may still be running. "
+            "The request was not resent. Check the backend job before retrying, or increase the model wait time"
+        )
     if isinstance(exc, httpx.TimeoutException):
         return "模型服务响应超时" if language == "zh" else "The model service timed out"
     if isinstance(exc, httpx.RemoteProtocolError):
