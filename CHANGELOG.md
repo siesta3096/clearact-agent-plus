@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2 — 2026-10-18
+
+- Fix local chat-template rejection after planning: combine trusted system-role notes into one
+  leading system message at the OpenAI-compatible and Ollama transport boundaries. Preserve
+  user/tool order, tool-call IDs, returned reasoning and the original run ledger.
+- Recognize the specific system-message ordering error without exposing raw service responses.
+- Explain the initial planning-only tool list and point to the next phase after planning.
+- Add strict-service regressions for both providers and verify requests against the local model.
+
 ## 0.2.1 — 2026-10-16
 
 - Add optional declarative acceptance checks for files, successful tool calls and distinct opened

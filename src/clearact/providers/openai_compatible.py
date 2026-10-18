@@ -6,6 +6,7 @@ import httpx
 
 from clearact.domain.models import Action, ChatMessage, LLMResponse, ToolDefinition
 from clearact.providers.attachments import openai_message_payload
+from clearact.providers.messages import system_first_messages
 
 
 class OpenAICompatibleProvider:
@@ -52,7 +53,7 @@ class OpenAICompatibleProvider:
     async def chat(self, messages: list[ChatMessage], tools: list[ToolDefinition]) -> LLMResponse:
         payload = {
             "model": self._model,
-            "messages": [self._message_payload(message) for message in messages],
+            "messages": [self._message_payload(message) for message in system_first_messages(messages)],
             "tools": [{"type": "function", "function": tool.model_dump()} for tool in tools],
         }
         headers = {"Authorization": f"Bearer {self._api_key}"}

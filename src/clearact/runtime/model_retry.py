@@ -30,6 +30,14 @@ def describe_model_error(exc: Exception, language: str = "zh") -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status == 400:
+            if "system message must be at the beginning" in exc.response.text[:8192].lower():
+                return (
+                    "模型服务拒绝消息顺序（HTTP 400）：系统提示必须位于对话开头。"
+                    "请检查客户端的消息格式兼容性"
+                    if language == "zh" else
+                    "The model service rejected the message order (HTTP 400): system messages must be "
+                    "at the beginning. Check the client's message format compatibility"
+                )
             return (
                 "模型服务无法识别当前请求，请检查接口类型、模型名称和 Base URL"
                 if language == "zh"

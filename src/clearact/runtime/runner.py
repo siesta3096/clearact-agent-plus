@@ -341,7 +341,9 @@ class AgentRunner:
                                 role="tool",
                                 name=action.tool_name,
                                 tool_call_id=action.id,
-                                content=("Workflow plan recorded. Begin its first phase." if recorded else
+                                content=((
+                                    f"Next: declare_workflow_step('{run.workflow_plan[0].id}')."
+                                ) if recorded else
                                          "Plan not recorded: provide at least one phase with a unique id, "
                                          "non-empty title, and summary."),
                                 metadata={"status": "succeeded" if recorded else "failed", "kind": "workflow_plan"},
