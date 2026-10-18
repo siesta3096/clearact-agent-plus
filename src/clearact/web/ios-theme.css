@@ -207,12 +207,12 @@ button:focus-visible, summary:focus-visible, a:focus-visible, input:focus-visibl
 .reasoning-details { border-color: var(--line); background: var(--surface-soft); }
 .reasoning-details summary { color: var(--blue); }
 .reasoning-content { border-color: var(--line); color: var(--ink-soft); }
-.stage-feedback { gap: 10px; }
+.stage-feedback { flex-wrap: wrap; gap: 10px; }
 .feedback-shortcuts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 13px 0 9px; }
 .feedback-shortcuts span { margin-right: 2px; color: var(--ink-soft); font-size: 12px; }
 .feedback-shortcuts button { min-height: 30px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-soft); color: var(--blue); font-size: 12px; font-weight: 650; }
 .feedback-shortcuts button:hover { border-color: #a8c8f5; background: var(--surface-tint); }
-.stage-feedback textarea { min-height: 63px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: 13px; line-height: 1.5; }
+.stage-feedback textarea { flex: 1; min-width: 0; width: auto; min-height: 63px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); color: var(--ink); font-size: 13px; line-height: 1.5; }
 .stage-feedback textarea::placeholder { color: var(--subtle); opacity: 1; }
 .stage-feedback button { flex: none; font-size: 12px; white-space: nowrap; }
 .result-card .stage-card { border-color: #c6d9f3; }
@@ -573,6 +573,8 @@ body {
 .acceptance-card li > strong { flex: none; color: var(--ink-soft); font-size: 11px; }
 .acceptance-card li > div { min-width: 0; overflow-wrap: anywhere; }
 .acceptance-card p { margin: 3px 0 0; color: var(--ink-soft); }
+.stage-feedback-status { flex-basis: 100%; margin: 0; color: var(--ink-soft); font-size: 12px; overflow-wrap: anywhere; }
+.stage-feedback-status:empty { display: none; }
 .result-evidence > summary { display: flex; align-items: center; gap: 8px; padding: 12px 0 4px; color: var(--blue); cursor: pointer; font-weight: 700; }
 .result-evidence > summary span { padding: 2px 7px; border-radius: 999px; background: var(--surface-tint); color: var(--ink); font-size: 11px; }
 .result-evidence p { margin: 7px 0; line-height: 1.5; }

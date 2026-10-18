@@ -803,3 +803,52 @@ def test_step_rewind_reuses_earlier_phase_and_records_branch(web_environment, mo
     archive = asyncio.run(webapp.revision_archive(run.id, revision.id))
     assert archive["run"]["messages"][-1]["content"] == "discarded"
     assert archive["events"][-1]["title"] == "旧分支检索"
+
+
+def test_retry_failed_planning_stage_keeps_original_goal_and_archives_failure(web_environment, monkeypatch):
+    settings, store = web_environment
+    original_goal = "Create a visual novel in this workspace"
+    plan = Action(id="plan", tool_name="declare_workflow_plan", arguments={"steps": []})
+    run = Run(
+        goal=original_goal, status=RunStatus.FAILED,
+        policy=UserPolicy(allowed_scopes=[str(settings.workspace_root)]),
+        messages=[ChatMessage(role="system", content="Original rules"),
+                  ChatMessage(role="user", content=original_goal),
+                  ChatMessage(role="assistant", tool_calls=[plan]),
+                  ChatMessage(role="tool", name=plan.tool_name, tool_call_id=plan.id, content="Plan recorded"),
+                  ChatMessage(role="assistant", content="Previous model request failed")],
+        workflow_steps=[WorkflowStep(id="understand", title="Plan", summary="Plan the task",
+                                     start_message_index=0, status="failed")],
+        workflow_plan=[WorkflowPlanItem(id="build", title="Build", summary="Build the game")],
+    )
+    store.save_run(run)
+    calls = []
+
+    async def execute(*args, run, **kwargs):
+        calls.append(run.model_copy(deep=True))
+        run.status = RunStatus.COMPLETED
+        store.save_run(run)
+
+    monkeypatch.setattr(webapp.cli, "_run", execute)
+
+    async def scenario():
+        preview = await webapp.rewind_preview(run.id, "understand")
+        assert preview["restore_paths"] == []
+        await webapp.start_run(webapp.StartRunRequest(
+            goal="Retry from the selected phase using the existing task requirements.", run_id=run.id,
+            rewind_step_id="understand", rewind_base_updated_at=preview["base_updated_at"],
+            rewind_preview_token=preview["preview_token"],
+        ))
+        await finish_run(run.id)
+
+    asyncio.run(scenario())
+    assert len(calls) == 1
+    restarted = calls[0]
+    assert restarted.goal == original_goal
+    assert [message.content for message in restarted.messages[:2]] == ["Original rules", original_goal]
+    assert restarted.messages[-1].role == "user"
+    assert restarted.workflow_steps == [] and restarted.workflow_plan == []
+    assert restarted.execution.workdir == str(settings.workspace_root)
+    archive = store.load_revision_archive(run.id, restarted.workflow_revisions[-1].id)
+    assert archive["run"]["status"] == "failed"
+    assert archive["run"]["messages"][-1]["content"] == "Previous model request failed"

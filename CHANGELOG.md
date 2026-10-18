@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3 — 2026-10-18
+
+- Fix stage restart silently doing nothing when feedback is empty. Blank or whitespace feedback
+  now uses an explicit retry instruction shown in the existing scope preview before confirmation.
+- Mark feedback optional, show immediate checking status and inline failures, and block duplicate
+  submission while the restart flow is pending. Preserve typed feedback and rewind safeguards.
+- Add blank/cancel/error/confirmation regressions and verify the reloaded UI in real Edge.
+
 ## 0.2.2 — 2026-10-18
 
 - Fix local chat-template rejection after planning: combine trusted system-role notes into one
