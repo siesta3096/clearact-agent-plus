@@ -49,6 +49,7 @@ class WorkflowStep(BaseModel):
     kind: str = "general"
     # Completed is the migration-safe default for ledgers created before phase status existed.
     status: str = "completed"
+    resolution: str | None = None
     action_ids: list[str] = Field(default_factory=list)
     start_message_index: int | None = None
     created_at: datetime = Field(default_factory=datetime.now)
@@ -163,6 +164,39 @@ class RunExecutionSettings(BaseModel):
     max_iterations: int | None = Field(default=None, ge=1)
     max_tool_calls: int | None = Field(default=None, ge=1)
     interface_language: str | None = Field(default=None, pattern="^(zh|en)$")
+    task_mode: Literal["auto", "develop", "discuss"] = "auto"
+
+
+class TaskContract(BaseModel):
+    mode: Literal["develop", "execute", "discuss"]
+    turn_start: int
+    project_creation: bool = False
+    expected_paths: list[str] = Field(default_factory=list)
+    require_tests: bool = False
+
+
+class DeliveryFile(BaseModel):
+    path: str
+    action_id: str
+    sha256: str
+    size_bytes: int
+    change: Literal["created", "modified"]
+
+
+class DeliveryCheck(BaseModel):
+    key: str
+    title: str
+    passed: bool
+    detail: str
+
+
+class DeliveryReport(BaseModel):
+    passed: bool
+    turn_start: int = -1
+    files: list[DeliveryFile] = Field(default_factory=list)
+    checks: list[DeliveryCheck] = Field(default_factory=list)
+    verification_action_ids: list[str] = Field(default_factory=list)
+    preview_action_ids: list[str] = Field(default_factory=list)
 
 
 class ResearchStrategy(BaseModel):
@@ -190,8 +224,13 @@ class Run(BaseModel):
     # only when the model declares a meaningful next phase.
     workflow_steps: list[WorkflowStep] = Field(default_factory=list)
     workflow_plan: list[WorkflowPlanItem] = Field(default_factory=list)
+    completed_plan_item_ids: list[str] = Field(default_factory=list)
     workflow_revisions: list[WorkflowRevision] = Field(default_factory=list)
     completion_checks: list[CompletionCheckResult] = Field(default_factory=list)
+    task_contract: TaskContract | None = None
+    delivery_report: DeliveryReport | None = None
+    delivery_history: list[DeliveryReport] = Field(default_factory=list)
+    rejected_responses: list[ChatMessage] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

@@ -9,6 +9,7 @@ from pypdf import PdfReader
 
 from clearact.domain.errors import ScopeViolationError, ToolValidationError
 from clearact.domain.models import ToolDefinition, ToolResult
+from clearact.tools.artifacts import capture_artifact_version, save_artifact
 from clearact.tools.base import ToolContext
 
 MAX_READ_CHARS = 50_000
@@ -299,19 +300,14 @@ class WriteFileTool(_FilesystemTool):
         if not isinstance(raw_path, str) or not isinstance(content, str):
             raise ToolValidationError("path and content must be strings")
         target = self._resolve(context, raw_path, writing=True)
-        existed = target.exists()
-        previous_content = target.read_text(encoding="utf-8") if existed else None
-        snapshot_id = (
-            context.snapshot_store.save_before_write(target, previous_content, existed)
-            if context.snapshot_store
-            else None
-        )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        version = capture_artifact_version(target)
+        if self._resolve(context, raw_path, writing=True) != target:
+            raise ToolValidationError("Target path changed before writing")
+        metadata = save_artifact(context, target, content.encode("utf-8"), expected_version=version)
         return ToolResult(
             action_id=action_id,
             tool_name=self.name,
             ok=True,
-            content=f"{'Updated' if existed else 'Created'} {target}.",
-            metadata={"path": str(target), "existed": existed, "snapshot_id": snapshot_id},
+            content=f"{'Updated' if version.existed else 'Created'} {target}.",
+            metadata=metadata,
         )

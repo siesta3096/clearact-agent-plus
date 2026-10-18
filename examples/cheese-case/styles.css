@@ -1,0 +1,299 @@
+/* ============================================================
+   地下室奶酪失踪案 · 样式
+   中世纪羊皮纸 + 城堡场景配色；全部离线，无外部字体/图片依赖
+   ============================================================ */
+
+:root {
+  --parchment: #f6e7c1;
+  --parchment-deep: #eed9a8;
+  --ink: #3a2a18;
+  --gold: #c9972f;
+  --gold-bright: #e8b84b;
+  --wood: #7a5230;
+  --red: #8c2f24;
+  --shadow: rgba(30, 18, 6, 0.35);
+}
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  color: var(--ink);
+  transition: background 0.6s ease;
+}
+
+/* ---------- 场景背景（由引擎切换 body class） ---------- */
+
+.scene-title    { background: radial-gradient(circle at 50% 20%, #2e4632 0%, #17251a 70%); }
+.scene-basement { background: radial-gradient(circle at 50% 25%, #8d7a5e 0%, #4a3d2c 75%); }
+.scene-hall     { background: radial-gradient(circle at 50% 25%, #b98a4a 0%, #5d4020 75%); }
+.scene-kitchen  { background: radial-gradient(circle at 50% 25%, #a9825a 0%, #57402a 75%); }
+.scene-cellar   { background: radial-gradient(circle at 50% 25%, #7c5a34 0%, #33241a 75%); }
+
+/* ---------- 布局 ---------- */
+
+.stage {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 16px 28px;
+}
+
+.hud {
+  width: 100%;
+  max-width: 780px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 4px 2px;
+}
+
+.scene-label {
+  color: var(--gold-bright);
+  font-size: 1.05rem;
+  letter-spacing: 0.12em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+
+.hud-buttons { display: flex; gap: 8px; }
+
+.screen {
+  width: 100%;
+  max-width: 780px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- 标题画面 ---------- */
+
+.screen-title {
+  text-align: center;
+  color: #f3e6c4;
+  padding: 40px 18px;
+}
+
+.crest {
+  font-size: 4.6rem;
+  line-height: 1;
+  filter: drop-shadow(0 6px 14px rgba(0,0,0,0.5));
+  animation: float 3.2s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-10px); }
+}
+
+.screen-title h1 {
+  margin: 18px 0 8px;
+  font-size: clamp(1.9rem, 6vw, 3rem);
+  letter-spacing: 0.14em;
+  color: var(--gold-bright);
+  text-shadow: 0 2px 10px rgba(0,0,0,0.55);
+}
+
+.subtitle {
+  margin: 0 0 34px;
+  font-size: 1.02rem;
+  color: #d9c79a;
+  letter-spacing: 0.08em;
+}
+
+.title-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+}
+
+.hint {
+  margin-top: 36px;
+  font-size: 0.85rem;
+  color: #b7a678;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- 剧情画面 ---------- */
+
+.screen-story { width: 100%; }
+
+.scene-art {
+  text-align: center;
+  font-size: 4.2rem;
+  line-height: 1.2;
+  filter: drop-shadow(0 8px 16px rgba(0,0,0,0.45));
+  animation: artIn 0.5s ease;
+}
+
+@keyframes artIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.dialog-box {
+  margin: 20px auto 0;
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-deep) 100%);
+  border: 4px double var(--wood);
+  outline: 2px solid rgba(0,0,0,0.25);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px var(--shadow);
+  padding: 20px 22px 22px;
+  position: relative;
+}
+
+.dialog-box.enter { animation: rise 0.35s ease; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.speaker {
+  display: inline-block;
+  background: var(--red);
+  color: #ffe9c2;
+  font-size: 0.95rem;
+  letter-spacing: 0.1em;
+  padding: 4px 14px;
+  border-radius: 999px;
+  box-shadow: inset 0 -2px 0 rgba(0,0,0,0.25);
+}
+
+.narration {
+  margin: 14px 0 6px;
+  font-size: 1.06rem;
+  line-height: 1.95;
+  white-space: pre-wrap;
+}
+
+/* ---------- 选择按钮 ---------- */
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.choice-btn {
+  text-align: left;
+  background: #fff8e3;
+  border: 2px solid var(--wood);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 1rem;
+  font-family: inherit;
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.choice-btn:hover, .choice-btn:focus-visible {
+  background: #ffefc2;
+  transform: translateX(4px);
+  box-shadow: -3px 3px 0 rgba(122, 82, 48, 0.35);
+  outline: none;
+}
+
+/* ---------- 结局徽章与按钮 ---------- */
+
+.ending-badge {
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: bold;
+  letter-spacing: 0.14em;
+  color: var(--red);
+  background: #fff3d0;
+  border: 2px dashed var(--gold);
+  border-radius: 8px;
+  padding: 10px 8px;
+}
+
+.ending .btn { text-align: center; }
+
+/* ---------- 通用按钮 ---------- */
+
+.btn {
+  font-family: inherit;
+  font-size: 1rem;
+  border-radius: 8px;
+  padding: 10px 20px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+
+.btn:hover:not(:disabled), .btn:focus-visible {
+  transform: translateY(-2px);
+  outline: none;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 100%);
+  color: #3a2405;
+  border-color: #8a6417;
+  box-shadow: 0 4px 0 #6d4e10, 0 8px 18px rgba(0,0,0,0.35);
+  letter-spacing: 0.1em;
+}
+
+.btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+
+.btn.primary:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 2px 0 #6d4e10; }
+
+.btn.ghost {
+  background: rgba(255, 248, 227, 0.12);
+  color: #f3e6c4;
+  border-color: rgba(243, 230, 196, 0.55);
+  padding: 7px 14px;
+  font-size: 0.92rem;
+  backdrop-filter: blur(2px);
+}
+
+.btn.ghost:hover:not(:disabled) { background: rgba(255, 248, 227, 0.24); }
+
+/* ---------- Toast 提示 ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  background: #2a1d0e;
+  color: #ffe9b0;
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  padding: 9px 22px;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.5);
+  animation: toastIn 0.25s ease;
+  z-index: 50;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* ---------- 小屏适配 ---------- */
+
+@media (max-width: 520px) {
+  .scene-art { font-size: 3.2rem; }
+  .dialog-box { padding: 16px 14px 18px; }
+  .hud { flex-direction: column; align-items: flex-start; }
+}

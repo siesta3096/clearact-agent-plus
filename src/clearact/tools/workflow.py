@@ -29,7 +29,7 @@ class DeclareWorkflowPlanTool:
         return ToolDefinition(
             name=self.name,
             description=(
-                "Publish the concise, user-visible plan for this task before using any external tool. "
+                "Publish a concise, user-visible plan when useful for this task. "
                 "Choose phases that fit the actual task; do not use a generic fixed template."
             ),
             parameters={

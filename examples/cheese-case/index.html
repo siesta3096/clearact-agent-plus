@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>地下室奶酪失踪案 · 中世纪幽默视觉小说</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🧀</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="scene-title">
+  <div class="stage">
+
+    <header class="hud">
+      <span id="scene-label" class="scene-label" aria-live="polite"></span>
+      <div class="hud-buttons">
+        <button id="btn-save" class="btn ghost" type="button" hidden>💾 存档</button>
+        <button id="btn-title" class="btn ghost" type="button" hidden>🏰 回到标题</button>
+      </div>
+    </header>
+
+    <main id="screen" class="screen">
+
+      <!-- 标题画面 -->
+      <section id="screen-title" class="screen-title">
+        <div class="crest" aria-hidden="true">🧀</div>
+        <h1 id="title-main">地下室奶酪失踪案</h1>
+        <p id="title-sub" class="subtitle"></p>
+        <div class="title-buttons">
+          <button id="btn-new" class="btn primary" type="button">⚔️ 开始新游戏</button>
+          <button id="btn-load" class="btn primary" type="button" disabled>📜 读取存档</button>
+        </div>
+        <p class="hint">纯离线运行 · 存档保存在本机浏览器 · 无恐怖元素，请放心食用</p>
+      </section>
+
+      <!-- 剧情画面 -->
+      <section id="screen-story" class="screen-story" hidden>
+        <div class="scene-art" id="scene-art" aria-hidden="true"></div>
+        <div class="dialog-box" id="dialog">
+          <div class="speaker" id="speaker"></div>
+          <p class="narration" id="story-text"></p>
+          <div class="choices" id="choices"></div>
+        </div>
+      </section>
+
+    </main>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+  </div>
+
+  <script src="js/story.js"></script>
+  <script src="js/engine.js"></script>
+</body>
+</html>

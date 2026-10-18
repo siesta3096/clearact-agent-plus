@@ -128,6 +128,8 @@ def evaluate_completion_checks(
     current_phases = {step.plan_item_id for step in run.workflow_steps
                       if step.start_message_index is not None and step.start_message_index >= turn}
     old_phases = {step.plan_item_id for step in run.workflow_steps} - current_phases
+    unfinished_old = {step.plan_item_id for step in run.workflow_steps
+                      if step.plan_item_id in old_phases and step.status not in {"completed", "recovered"}}
     sources = set()
     for action_id, message in successful.items():
         action = actions[action_id]
@@ -141,7 +143,9 @@ def evaluate_completion_checks(
             sources.add(source)
     results = []
     for item in run.workflow_plan:
-        if item.id in old_phases or (item.id not in current_phases and not include_unreached):
+        if item.id in old_phases and not (include_unreached and item.id in unfinished_old):
+            continue
+        if item.id not in current_phases and not include_unreached:
             continue
         for index, check in enumerate(item.checks):
             try:

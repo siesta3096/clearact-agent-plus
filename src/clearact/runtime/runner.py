@@ -19,6 +19,15 @@ from clearact.providers.base import LLMProvider
 from clearact.runtime.approvals import ApprovalGate
 from clearact.runtime.checkpoints import create_checkpoint
 from clearact.runtime.completion import evaluate_completion_checks
+from clearact.runtime.continuation import continues_unfinished_plan
+from clearact.runtime.delivery import (
+    archive_delivery,
+    delivery_summary,
+    development_guidance,
+    development_state,
+    evaluate_delivery,
+    infer_contract,
+)
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.events import (
     action_completed,
@@ -41,13 +50,14 @@ from clearact.runtime.model_retry import (
     is_transient_model_error,
 )
 from clearact.runtime.policy import PolicyEngine
+from clearact.runtime.prompting import system_prompt
 from clearact.runtime.research_strategy import classify_research_strategy, local_source_requested
 from clearact.runtime.risk import RiskEvaluator
 from clearact.runtime.stage_mapper import StageMapper
 from clearact.runtime.state import transition
 from clearact.storage.checkpoint_store import CheckpointStore
 from clearact.storage.run_store import RunStore
-from clearact.tools.artifacts import FILE_WRITE_TOOLS, OFFICE_TOOLS
+from clearact.tools.artifacts import FILE_WRITE_TOOLS
 from clearact.tools.base import ToolContext
 from clearact.tools.filesystem import MAX_READ_CHARS
 from clearact.tools.registry import ToolRegistry
@@ -112,6 +122,7 @@ class AgentRunner:
             )
             if run.status in {RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED}:
                 transition(run, RunStatus.CANCELLED)
+            run.delivery_report = await asyncio.to_thread(evaluate_delivery, run, self._tool_context)
             self._run_store.save_run(run)
             raise
         except Exception as exc:
@@ -127,11 +138,16 @@ class AgentRunner:
             if run.status in {RunStatus.CREATED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.PAUSED}:
                 transition(run, RunStatus.FAILED)
             self._fail_active_step(run)
+            run.delivery_report = await asyncio.to_thread(evaluate_delivery, run, self._tool_context)
             self._run_store.save_run(run)
             raise
 
     async def _run_loop(self, run: Run) -> str:
         transition(run, RunStatus.RUNNING)
+        run.task_contract = infer_contract(run)
+        development = run.task_contract.mode == "develop"
+        archive_delivery(run)
+        run.rejected_responses = []
         run.stage_notes.pop("completion_review", None)
         run.completion_checks = []
         run.research_strategy = classify_research_strategy(run)
@@ -154,18 +170,22 @@ class AgentRunner:
         invalid_plan_attempts = 0
         stalled_rounds = 0
         completion_review_sent = False
+        completion_review_count = 0
+        reviewed_action_count = -1
         completion_review_instruction: ChatMessage | None = None
         # A follow-up may reuse an older plan; only audit phases planned in this turn.
-        review_new_plan = not run.workflow_plan
+        continuing_plan = continues_unfinished_plan(run)
+        review_new_plan = not run.workflow_plan or continuing_plan
 
         for iteration in range(self._max_iterations):
             definitions = self._registry.definitions()
-            if not run.workflow_plan and "declare_workflow_plan" in self._registry.names():
+            if (not development and run.task_contract.mode != "discuss" and not run.workflow_plan
+                    and "declare_workflow_plan" in self._registry.names()):
                 definitions = [tool for tool in definitions if tool.name == "declare_workflow_plan"]
             else:
                 definitions = [
                     tool for tool in definitions
-                    if tool.name != "declare_workflow_plan"
+                    if (tool.name != "declare_workflow_plan" or (development and not run.workflow_plan))
                     and self._policy_tool_offered(run, tool.name)
                     and self._web_tool_offered(run, tool.name)
                     and (
@@ -177,15 +197,59 @@ class AgentRunner:
                         )
                     )
                 ]
+            if development:
+                user_text = " ".join(
+                    message.content or "" for message in run.messages if message.role == "user"
+                ).lower()
+                if not any(term in user_text for term in ("word", "excel", "docx", "xlsx", "电子表格", "工作簿")):
+                    definitions = [tool for tool in definitions
+                                   if tool.name not in {"create_document", "create_spreadsheet"}]
+            if run.task_contract.mode == "discuss":
+                definitions = [tool for tool in definitions if tool.name in {
+                    "list_files", "read_file", "read_pdf", "search_files", "check_files", "web_search", "fetch_url",
+                }]
             context_messages = [*run.messages]
+            # Upgrade runtime-owned guidance for resumed ledgers without rewriting history.
+            if context_messages and context_messages[0].role == "system" and (
+                context_messages[0].content or ""
+            ).startswith("You are ClearAct, a local workspace agent."):
+                context_messages[0] = context_messages[0].model_copy(update={
+                    "content": system_prompt(run.goal, run.execution.interface_language or "zh"),
+                })
+            if development:
+                context_messages.append(ChatMessage(role="system", content=development_guidance(
+                    run.task_contract, self._tool_context.workspace_root,
+                )))
+                context_messages.append(ChatMessage(role="system", content=development_state(
+                    run, self._tool_context.workspace_root,
+                )))
             if run.workflow_plan:
+                guidance = (
+                    "A workflow plan already exists. Do not call declare_workflow_plan again; "
+                    "keep reached phases and use revise_workflow_plan only to change future phases."
+                )
+                if any(tool.name == "write_file" for tool in definitions):
+                    guidance += (
+                        " This request offers write_file for saving workspace files, subject to policy. "
+                        "Use it for requested file delivery; earlier claims of missing tools are not evidence."
+                    )
+                if continuing_plan:
+                    completed = [step.plan_item_id for step in run.workflow_steps
+                                 if step.plan_item_id and step.status == "completed"]
+                    guidance += f" Recorded completed plan phases: {', '.join(completed) or 'none'}."
                 context_messages.append(ChatMessage(
                     role="system",
-                    content=(
-                        "A workflow plan already exists. Do not call declare_workflow_plan again; "
-                        "keep reached phases and use revise_workflow_plan only to change future phases."
-                    ),
+                    content=guidance,
                 ))
+            latest_user = next((message for message in reversed(run.messages) if message.role == "user"), None)
+            rewind_id = latest_user.metadata.get("rewind_revision_id") if latest_user else None
+            revision = next((item for item in run.workflow_revisions if item.id == rewind_id), None)
+            if revision:
+                context_messages.append(ChatMessage(role="system", content=(
+                    f"This rewind retained {len(revision.reused_step_ids)} earlier phases. "
+                    "Only recorded tool results and retained phases establish earlier work; "
+                    "a plan or retry instruction does not prove any design or file was completed."
+                )))
             policy_guidance = self._policy_guidance(run)
             if policy_guidance:
                 context_messages.append(ChatMessage(role="system", content=policy_guidance))
@@ -197,7 +261,8 @@ class AgentRunner:
             messages = list(messages)
             response = await self._chat_with_retries(run, messages, tools)
             response = await self._finish_truncated_response(run, messages, response)
-            if not run.workflow_plan and "declare_workflow_plan" in self._registry.names():
+            if (not development and run.task_contract.mode != "discuss" and not run.workflow_plan
+                    and "declare_workflow_plan" in self._registry.names()):
                 if not response.tool_calls and (response.content or "").strip() and _SIMPLE_CHAT.fullmatch(run.goal):
                     # A greeting needs no plan/tool round trips. Show one honest
                     # visible phase instead of rejecting a normal chat reply.
@@ -223,7 +288,8 @@ class AgentRunner:
                 changed = self._changed_written_files(run)
                 run.completion_checks = await asyncio.to_thread(
                     evaluate_completion_checks, run, self._tool_context, include_unreached=review_new_plan,
-                )
+                ) if review_new_plan else []
+                run.delivery_report = await asyncio.to_thread(evaluate_delivery, run, self._tool_context)
                 passed_phases = {
                     item.plan_item_id for item in run.completion_checks
                     if all(result.status == "passed" for result in run.completion_checks
@@ -232,14 +298,30 @@ class AgentRunner:
                 unworked = self._unworked_phase_titles(run, passed_phases)
                 failed_checks = [f"{item.phase_title}：{item.detail}" for item in run.completion_checks
                                  if item.status != "passed"]
+                if run.delivery_report:
+                    failed_checks.extend(f"{item.title}：{item.detail}" for item in run.delivery_report.checks
+                                         if not item.passed)
+                    if run.delivery_report.passed:
+                        pending = []  # Successful delivery outranks missing optional progress markers.
+                        unworked = []
+                        self._recover_exploratory_reads(run)
                 unsuccessful = self._unsuccessful_phase_titles(run, passed_phases)
+                if run.task_contract.mode == "discuss":
+                    pending, missing, changed, unworked, failed_checks, unsuccessful = [], [], [], [], [], []
                 needs_review = bool(pending or missing or changed or unworked or failed_checks or unsuccessful)
                 if (
                     (pending or missing or changed or unworked or failed_checks)
-                    and not completion_review_sent
+                    and (not completion_review_sent or (development and completion_review_count < 3
+                         and tool_call_count > reviewed_action_count))
                     and iteration + 1 < self._max_iterations
                 ):
                     completion_review_sent = True
+                    completion_review_count += 1
+                    reviewed_action_count = tool_call_count
+                    run.rejected_responses.append(ChatMessage(
+                        role="assistant", content=response.content, reasoning_content=reasoning,
+                        metadata={"reason": "unmet_delivery", "attempt": completion_review_count},
+                    ))
                     pending_titles = [item.title for item in pending]
                     completion_review_instruction = ChatMessage(
                         role="system",
@@ -275,8 +357,18 @@ class AgentRunner:
                     run.stage_notes["completion_review"] = warning
                 else:
                     run.stage_notes.pop("completion_review", None)
+                    if development:
+                        run.completed_plan_item_ids = [item.id for item in run.workflow_plan]
                 final = response.content
-                run.messages.append(ChatMessage(role="assistant", content=final, reasoning_content=reasoning))
+                if development and needs_review:
+                    run.rejected_responses.append(ChatMessage(
+                        role="assistant", content=response.content, reasoning_content=reasoning,
+                        metadata={"reason": "delivery_incomplete", "attempt": completion_review_count + 1},
+                    ))
+                if development:
+                    final = delivery_summary(run)
+                run.messages.append(ChatMessage(role="assistant", content=final, reasoning_content=reasoning,
+                                                metadata={"model_draft": response.content} if development else {}))
                 self._complete_active_step(run)
                 for step in run.workflow_steps:
                     related = [item for item in run.completion_checks if item.plan_item_id == step.plan_item_id]
@@ -293,6 +385,7 @@ class AgentRunner:
                     type="completion.checked", run_id=run.id,
                     title="验收需核对" if needs_review else "完成核对通过",
                     data={"needs_review": needs_review,
+                          "delivery": run.delivery_report.model_dump(mode="json") if run.delivery_report else None,
                           "checks": [item.model_dump(mode="json") for item in run.completion_checks]},
                 ))
                 await self._event_bus.publish(run_completed(run))
@@ -321,6 +414,12 @@ class AgentRunner:
             try:
                 for action in accepted_actions:
                     recent_tool_names.add(action.tool_name)
+                    if run.task_contract.mode == "discuss" and action.tool_name not in {tool.name for tool in tools}:
+                        run.messages.append(ChatMessage(role="tool", name=action.tool_name, tool_call_id=action.id,
+                            content="Discussion mode only permits the offered read-only tools.",
+                            metadata={"status": "denied", "reason": "discussion_mode"}))
+                        self._run_store.save_run(run)
+                        continue
                     if action.tool_name == "declare_workflow_plan":
                         if run.workflow_plan:
                             run.messages.append(ChatMessage(
@@ -645,6 +744,22 @@ class AgentRunner:
         raise RuntimeError(f"Agent reached the maximum iteration limit ({self._max_iterations}).")
 
     @staticmethod
+    def _recover_exploratory_reads(run: Run) -> None:
+        """Preserve failed reads while distinguishing an overcome exploration error from delivery failure."""
+        boundary = run.task_contract.turn_start if run.task_contract else len(run.messages)
+        actions = {action.id: action for message in run.messages[boundary + 1:]
+                   if message.role == "assistant" for action in message.tool_calls}
+        for step in run.workflow_steps:
+            if (step.status not in {"needs_review", "failed"} or not step.action_ids
+                    or step.start_message_index is None or step.start_message_index <= boundary):
+                continue
+            if all(action_id in actions and actions[action_id].tool_name in {
+                "list_files", "read_file", "search_files",
+            } for action_id in step.action_ids):
+                step.status = "recovered"
+                step.resolution = "该次读取未成功；后续已完成工作区检查、文件交付与验证，原失败记录保留。"
+
+    @staticmethod
     def _unreached_plan_items(run: Run) -> list[WorkflowPlanItem]:
         reached = {step.plan_item_id for step in run.workflow_steps}
         return [item for item in run.workflow_plan if item.id not in reached]
@@ -671,6 +786,8 @@ class AgentRunner:
                              if run.messages[index].role == "user"), -1)
         titles = []
         for step in run.workflow_steps:
+            if step.status == "recovered":
+                continue
             if step.start_message_index is None or step.start_message_index < current_turn:
                 continue
             if step.plan_item_id in passed_phases:
@@ -721,7 +838,7 @@ class AgentRunner:
             path = message.metadata.get("path")
             action = actions.get(message.tool_call_id or "")
             content = action.arguments.get("content") if action else None
-            content_hash = message.metadata.get("content_sha256") if message.name in OFFICE_TOOLS else None
+            content_hash = message.metadata.get("content_sha256")
             if isinstance(path, str) and isinstance(content_hash, str):
                 expected[path] = ("sha256", content_hash)
             elif isinstance(path, str) and isinstance(content, str):
@@ -750,7 +867,8 @@ class AgentRunner:
                     type="model.waiting", run_id=run.id,
                     title=("正在等待模型答复" if run.execution.interface_language != "en"
                            else "Waiting for model response"),
-                    data={"timeout_seconds": getattr(self._provider, "request_timeout_seconds", None)},
+                    data={"timeout_seconds": getattr(self._provider, "request_timeout_seconds", None),
+                          "tool_names": [tool.name for tool in tools]},
                 ))
                 response = await self._provider.chat(messages, tools)
             except asyncio.CancelledError:
@@ -947,7 +1065,11 @@ class AgentRunner:
 
     @staticmethod
     def _policy_tool_offered(run: Run, tool_name: str) -> bool:
-        if tool_name in {"list_files", "read_file", "read_pdf"}:
+        if tool_name == "preview_project":
+            return (run.policy.allow_read and run.policy.allow_write
+                    and run.policy.capability_rules.get("local_read") != "deny"
+                    and run.policy.capability_rules.get("browser_interaction") != "deny")
+        if tool_name in {"list_files", "read_file", "read_pdf", "search_files", "check_files"}:
             return run.policy.allow_read and run.policy.capability_rules.get("local_read") != "deny"
         if tool_name in FILE_WRITE_TOOLS:
             return run.policy.allow_write
@@ -1392,6 +1514,7 @@ class AgentRunner:
         if not planned:
             return False
         run.workflow_plan = planned
+        run.completed_plan_item_ids = []
         overview = str(action.arguments.get("summary", "")).strip()
         run.stage_notes["understand"] = overview[:1200] or "已根据目标生成可执行计划。"
         if run.workflow_steps and run.workflow_steps[0].id == "understand":
@@ -1500,7 +1623,7 @@ class AgentRunner:
             title_matches = [item for item in run.workflow_plan if item.title.casefold() == title.casefold()]
             if len(title_matches) == 1:
                 planned = title_matches[0]
-            elif plan_item_id or title_matches:
+            elif (plan_item_id or title_matches) and run.workflow_plan:
                 return "unknown_plan_item"
         effective_plan_id = planned.id if planned else plan_item_id
         current_turn = next(

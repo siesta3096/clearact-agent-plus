@@ -11,7 +11,7 @@ from rich.console import Console
 from clearact.context.budget import ContextBudget
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import RiskLevel, RunStatus
-from clearact.domain.models import ChatMessage, Run, UserPolicy
+from clearact.domain.models import ChatMessage, Run, RunExecutionSettings, UserPolicy
 from clearact.providers.ollama import OllamaProvider
 from clearact.providers.openai_compatible import OpenAICompatibleProvider
 from clearact.providers.transport import DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -30,9 +30,11 @@ from clearact.storage.run_store import RunStore
 from clearact.storage.snapshots import SnapshotStore
 from clearact.tools.base import ToolContext
 from clearact.tools.command import ExecuteCommandTool
+from clearact.tools.development import CheckFilesTool, EditFileTool, SearchFilesTool
 from clearact.tools.filesystem import ListFilesTool, ReadFileTool, ReadPdfTool, WriteFileTool
 from clearact.tools.mcp import MCPManager, MCPTool
 from clearact.tools.office import CreateDocumentTool, CreateSpreadsheetTool
+from clearact.tools.project_preview import PreviewProjectTool
 from clearact.tools.registry import ToolRegistry
 from clearact.tools.web import FetchUrlTool, WebSearchTool
 from clearact.tools.workflow import DeclareWorkflowPlanTool, DeclareWorkflowStepTool, ReviseWorkflowPlanTool
@@ -152,8 +154,9 @@ def _doctor() -> int:
         profile = settings.models["profiles"][settings.models["default_profile"]]
         if profile["provider"] == "openai_compatible":
             env_name = profile.get("api_key_env")
+            env_key = os.getenv(env_name, "") if env_name else ""
             checks.append(
-                ("default API key", bool(os.getenv(env_name, "") or profile.get("api_key", "")), env_name or "apiKey")
+                ("default API key", bool(env_key or profile.get("api_key", "")), env_name or "apiKey")
             )
     except (FileNotFoundError, KeyError, ValueError, RuntimeError) as exc:
         checks.append(("configuration", False, str(exc)))
@@ -175,6 +178,7 @@ async def _run(
     approval_gate: ApprovalGate | None = None,
     render_console: bool = True,
     computer_use_manager=None,
+    task_mode: str | None = None,
 ) -> None:
     project_root = _project_root()
     _load_dotenv(project_root)
@@ -183,7 +187,8 @@ async def _run(
         await _run_impl(
             goal, profile_name, autonomy, workdir, max_iterations, max_tool_calls,
             run=run, interface_language=interface_language, approval_gate=approval_gate,
-            render_console=render_console, computer_use_manager=computer_use_manager, settings=settings,
+            render_console=render_console, computer_use_manager=computer_use_manager,
+            task_mode=task_mode, settings=settings,
         )
 
 
@@ -199,6 +204,7 @@ async def _run_impl(
     approval_gate: ApprovalGate | None = None,
     render_console: bool = True,
     computer_use_manager=None,
+    task_mode: str | None = None,
     *,
     settings: AppSettings,
 ) -> None:
@@ -227,6 +233,10 @@ async def _run_impl(
         ReadFileTool(),
         ReadPdfTool(),
         WriteFileTool(),
+        EditFileTool(),
+        SearchFilesTool(),
+        CheckFilesTool(),
+        PreviewProjectTool(),
         ExecuteCommandTool(),
         CreateDocumentTool(),
         CreateSpreadsheetTool(),
@@ -248,6 +258,8 @@ async def _run_impl(
     if run is None:
         run = Run(
             goal=goal,
+            execution=RunExecutionSettings(workdir=str(workspace_root), profile=selected_name,
+                                           task_mode=task_mode or "auto", interface_language=interface_language),
             policy=UserPolicy(
                 autonomy_threshold=RiskLevel(autonomy) if autonomy else settings.default_autonomy,
                 allowed_scopes=[str(workspace_root)],
@@ -257,6 +269,8 @@ async def _run_impl(
                 ChatMessage(role="user", content=goal),
             ],
         )
+    elif task_mode is not None:
+        run.execution.task_mode = task_mode
 
     async def resolve_computer_session():
         if computer_use_manager is None:
@@ -312,6 +326,8 @@ def main() -> None:
     )
     run_parser.add_argument("--max-iterations", type=int, help="Override the configured iteration budget.")
     run_parser.add_argument("--max-tool-calls", type=int, help="Override the configured tool-call budget.")
+    run_parser.add_argument("--task-mode", choices=["auto", "develop", "discuss"], default="auto",
+                            help="Develop delivers files and verification; discuss offers read-only tools.")
 
     subparsers.add_parser("web", help="Start the local browser control console.")
     subparsers.add_parser("gateway", help="Start the local console and open it in your browser.")
@@ -334,7 +350,8 @@ def main() -> None:
             if args.max_tool_calls is not None and args.max_tool_calls < 1:
                 raise ValueError("--max-tool-calls must be at least 1")
             asyncio.run(
-                _run(args.goal, args.profile, args.autonomy, args.workdir, args.max_iterations, args.max_tool_calls)
+                _run(args.goal, args.profile, args.autonomy, args.workdir, args.max_iterations, args.max_tool_calls,
+                     task_mode=args.task_mode)
             )
         elif args.command in {"web", "gateway"}:
             from clearact.webapp import start

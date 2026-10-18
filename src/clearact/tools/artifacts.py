@@ -10,7 +10,7 @@ from pathlib import Path
 from clearact.domain.errors import ToolValidationError
 from clearact.tools.base import ToolContext
 
-FILE_WRITE_TOOLS = frozenset({"write_file", "create_document", "create_spreadsheet"})
+FILE_WRITE_TOOLS = frozenset({"write_file", "edit_file", "create_document", "create_spreadsheet"})
 OFFICE_TOOLS = frozenset({"create_document", "create_spreadsheet"})
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 

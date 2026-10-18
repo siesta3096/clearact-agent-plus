@@ -6,13 +6,16 @@ ClearAct 是一个本地优先、可审查的轻量 Agent Runtime。模型只能
 
 ## 已实现能力
 
+- **开发与交付模式**：从第一轮检查目录并实际实现项目，支持代码搜索、精确编辑、只读语法检查和本地浏览器交互验证。
+  新项目要求模块文件、运行与架构文档；没有真实文件或修改后检查不能显示完成。结果提供文件清单、变化预览、
+  对应轮次 ZIP、验证截图与先前交付记录。实现结构和验证边界见 [v0.3.0 开发能力升级](docs/development-agent-2026-10-18.md)。
 - OpenAI-compatible API 与 Ollama 的原生工具调用循环。
 - 原生 Word / Excel 生成：Word 支持标题、段落、列表、表格和页码；Excel 支持多工作表、原生表格、筛选、冻结首行、数字/日期格式、公式和柱状/折线图。生成文件可在结果卡片下载；覆盖前保存原始字节，回溯时保护用户后续修改。当前是结构化生成器，不是现有复杂 Office 文件的保真编辑器；Excel 公式由 Excel 打开时重新计算。
 - 通用命令执行：传入可执行程序和参数，在本次工作目录运行，记录输出、错误、退出码与超时。每次执行必须确认；命令无法自动回溯，也不具备文件/网络沙箱隔离。关闭相关能力或明确要求离线时，通用命令不会执行。
 - 本地文件工具：列目录、读 UTF-8 文本、写 UTF-8 文本；作用范围为用户为**本次运行**选择的任意已有目录，默认是 `workspace/`。
 - Web 输入框支持一次附加最多 8 个文件或图片；附件安全复制到当前工作区并记入运行记录，图片会按 OpenAI-compatible 或 Ollama 的多模态格式交给支持视觉的模型。
 - 联网工具：网页搜索、HTTP(S) URL 获取；`localhost` / `127.0.0.1` 默认可访问，可在根目录 `clearact.json` 关闭。
-- 任务开始时先生成贴合目标的动态阶段计划；阶段随执行逐条显现，详情中可检查检索来源、文件与工具结果。
+- 支持贴合目标的动态阶段计划；开发任务可直接操作文件，计划用于说明进度。阶段详情可检查资料、文件与工具结果。
 - 新证据改变任务方向时，Agent 可说明原因并重排尚未开始的阶段；已执行阶段保持原样，界面会显示改计划次数和最近一次原因。
 - 执行中会复用已读取的文件片段与相近检索；若同一轮重复读取、读取已覆盖的文件区间、近似搜索，或旧结果已被上下文压缩移出，会把先前的实际结果重新交给模型，而不是只提示“已跳过”。超出文件末尾的区间不会被误判为已覆盖。按任务选择“仅本地、本地优先、混合、调查”等资料策略，限制无关搜索并先消化指定附件。Web 任务页显示采用的策略、用时和检索次数。
 - 阶段详情可预览当时的文件读取结果，并查看每次写入相对于执行前快照的差异；预览仅开放给该任务已成功执行、且位于其授权工作区内的文件操作。
@@ -157,10 +160,13 @@ clearact restore snapshot_xxxxxxxxxxxx
 
 ## 验证
 
+浏览器回归在 Windows 使用已安装的 Edge；其他系统先运行 `python -m playwright install --with-deps chromium`。
+JavaScript 语法检查与样例测试需要安装 Node.js。CI 会准备这些依赖。
+
 ```powershell
 $env:PYTHONPATH = "$PWD/src"
 python -m pytest -q
-python -m ruff check src tests
+python -m ruff check src tests scripts
 ```
 
 固定的任务执行场景可独立运行，覆盖真实文件生成、命令审批和工具失败记录；模型响应固定，不调用付费模型：
@@ -169,6 +175,9 @@ python -m ruff check src tests
 $env:PYTHONPATH = "$PWD/src"
 python -m pytest tests/integration/test_task_scenarios.py tests/unit/test_artifact_web.py tests/unit/test_command_policy.py -q
 ```
+
+真实模型生成的可试玩项目与脱敏评估记录见 [开发样例](examples/README.md)。
+独立本地模型评估方法、模块结构、交付标准与已知限制见 [v0.3.0 开发模式记录](docs/development-agent-2026-10-18.md)。
 
 ## 命令与 Office 文件
 

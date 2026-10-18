@@ -5,7 +5,11 @@ from clearact.tools.artifacts import FILE_WRITE_TOOLS
 
 class PolicyEngine:
     def decide(self, assessment: RiskAssessment, policy: UserPolicy, tool_name: str | None = None) -> PolicyDecision:
-        if tool_name in {"list_files", "read_file", "read_pdf"} and not policy.allow_read:
+        if tool_name == "preview_project" and (not policy.allow_read or not policy.allow_write
+                                               or policy.capability_rules.get("local_read") == "deny"):
+            return PolicyDecision(outcome=DecisionOutcome.DENY, reason="本地预览需要已启用的工作区读取与写入权限。")
+        if (tool_name in {"list_files", "read_file", "read_pdf", "search_files", "check_files"}
+                and not policy.allow_read):
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用本地读取操作。")
         if tool_name in FILE_WRITE_TOOLS and not policy.allow_write:
             return PolicyDecision(outcome=DecisionOutcome.DENY, reason="用户策略已禁用本地写入操作。")

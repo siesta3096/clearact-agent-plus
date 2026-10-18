@@ -6,15 +6,17 @@ import binascii
 import ctypes
 import difflib
 import hashlib
+import io
 import json
 import logging
 import os
 import tempfile
 import threading
 import webbrowser
+import zipfile
 from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -37,6 +39,7 @@ from clearact.domain.models import (
     new_id,
 )
 from clearact.providers.transport import validate_request_timeout
+from clearact.runtime.delivery import archive_delivery
 from clearact.runtime.model_retry import ModelRequestError
 from clearact.runtime.prompting import system_prompt
 from clearact.settings import load_settings
@@ -217,6 +220,7 @@ class StartRunRequest(BaseModel):
     max_tool_calls: int | None = Field(default=None, ge=1, le=100_000)
     attachments: list[AttachmentReference] = Field(default_factory=list, max_length=8)
     browser_session_id: str | None = Field(default=None, max_length=128)
+    task_mode: Literal["auto", "develop", "discuss"] | None = None
 
 
 class BrowserSessionRequest(BaseModel):
@@ -490,7 +494,7 @@ def _rollback_discarded_effects(
                     warnings.append(f"Snapshot path does not match the write action; left unchanged: {target}")
                     continue
                 expected = action.arguments.get("content") if action and action.tool_name == "write_file" else None
-                expected_hash = message.metadata.get("content_sha256") if action.tool_name in OFFICE_TOOLS else None
+                expected_hash = message.metadata.get("content_sha256")
                 if not isinstance(expected, str) and not isinstance(expected_hash, str):
                     warnings.append(f"Could not verify the current content of {target}; left it unchanged")
                     continue
@@ -1195,7 +1199,7 @@ async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
     result = next(
         (message for message in run.messages if message.role == "tool" and message.tool_call_id == action_id), None
     )
-    if not action or action.tool_name not in {"read_file", "read_pdf", "write_file"}:
+    if not action or action.tool_name not in {"read_file", "read_pdf", "write_file", "edit_file"}:
         raise HTTPException(status_code=404, detail="File action not found")
     if not result or result.metadata.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="File action did not complete successfully")
@@ -1217,7 +1221,7 @@ async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
     except ValueError:
         outside_workspace = True
     limit = 120_000
-    if action.tool_name != "write_file":
+    if action.tool_name not in {"write_file", "edit_file"}:
         content = result.content or ""
         recorded_version = _recorded_file_version(result)
         try:
@@ -1246,6 +1250,13 @@ async def action_file_preview(run_id: str, action_id: str) -> dict[str, Any]:
     if before_path != target:
         raise HTTPException(status_code=409, detail="Snapshot path does not match the action")
     after = action.arguments.get("content")
+    if action.tool_name == "edit_file":
+        old, new = action.arguments.get("old_text"), action.arguments.get("new_text")
+        if not isinstance(old, str) or not isinstance(new, str) or before.count(old) != 1:
+            raise HTTPException(status_code=409, detail="Recorded edit cannot be reconstructed")
+        after = before.replace(old, new, 1)
+        if hashlib.sha256(after.encode("utf-8")).hexdigest() != result.metadata.get("content_sha256"):
+            raise HTTPException(status_code=409, detail="Recorded edit content does not match its hash")
     if not isinstance(after, str):
         raise HTTPException(status_code=409, detail="Written content is unavailable")
     diff = "".join(difflib.unified_diff(
@@ -1300,6 +1311,97 @@ async def download_artifact(run_id: str, action_id: str) -> Response:
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(target.name)}",
         "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
     })
+
+
+@app.get("/api/runs/{run_id}/project-download")
+async def project_download(run_id: str, turn: int | None = None) -> Response:
+    settings = load_settings(cli._project_root())
+    try:
+        run = RunStore(settings.data_root).load_run(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Topic not found") from exc
+    report = run.delivery_report if turn is None else next((item for item in [
+        *([run.delivery_report] if run.delivery_report else []), *reversed(run.delivery_history),
+    ] if item.turn_start == turn), None)
+    if not report or not report.files:
+        raise HTTPException(status_code=404, detail="No recorded project files")
+    if not run.policy.allow_read or run.policy.capability_rules.get("local_read") == "deny":
+        raise HTTPException(status_code=403, detail="File reading is disabled")
+    workspace = Path(run.execution.workdir or settings.workspace_root).resolve()
+    actions = {action.id: action for message in run.messages if message.role == "assistant"
+               for action in message.tool_calls}
+    results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
+    output, seen, total = io.BytesIO(), set(), 0
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in report.files:
+            action, result = actions.get(item.action_id), results.get(item.action_id)
+            if (not action or action.tool_name not in FILE_WRITE_TOOLS or not result
+                    or result.name != action.tool_name or result.metadata.get("status") != "succeeded"):
+                raise HTTPException(status_code=409, detail="Project file has no successful write record")
+            target = (workspace / item.path).resolve()
+            raw = action.arguments.get("path")
+            candidate = Path(raw) if isinstance(raw, str) else None
+            expected = ((candidate if candidate.is_absolute() else workspace / candidate).resolve()
+                        if candidate is not None else None)
+            if (not target.is_relative_to(workspace) or target != expected
+                    or str(target) != result.metadata.get("path") or ".." in Path(item.path).parts
+                    or Path(item.path).is_absolute() or "\\" in item.path or ":" in item.path):
+                raise HTTPException(status_code=403, detail="Project path is outside its recorded scope")
+            if item.path in seen:
+                raise HTTPException(status_code=409, detail="Duplicate project path")
+            seen.add(item.path)
+            try:
+                if target.stat().st_size > 32 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Project file is too large")
+                with target.open("rb") as handle:
+                    data = handle.read(32 * 1024 * 1024 + 1)
+            except OSError as exc:
+                raise HTTPException(status_code=409, detail="Project file is unavailable") from exc
+            total += len(data)
+            if len(data) > 32 * 1024 * 1024 or total > 64 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Project download exceeds the size limit")
+            if hashlib.sha256(data).hexdigest() != item.sha256:
+                raise HTTPException(status_code=409, detail="Project file changed after verification")
+            recorded_hash = result.metadata.get("content_sha256")
+            if recorded_hash and recorded_hash != item.sha256:
+                raise HTTPException(status_code=409, detail="Project manifest does not match its write record")
+            archive.writestr(item.path, data)
+    return Response(output.getvalue(), media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="clearact-{run.id}.zip"',
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
+@app.get("/api/runs/{run_id}/actions/{action_id}/screenshot")
+async def project_screenshot(run_id: str, action_id: str) -> Response:
+    settings = load_settings(cli._project_root())
+    try:
+        run = RunStore(settings.data_root).load_run(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Topic not found") from exc
+    if not run.policy.allow_read or run.policy.capability_rules.get("local_read") == "deny":
+        raise HTTPException(status_code=403, detail="File reading is disabled")
+    action = next((action for message in run.messages if message.role == "assistant"
+                   for action in message.tool_calls if action.id == action_id), None)
+    result = next((message for message in reversed(run.messages) if message.role == "tool"
+                   and message.tool_call_id == action_id and message.name == "preview_project"), None)
+    if (not action or action.tool_name != "preview_project" or not result
+            or result.metadata.get("status") not in {"succeeded", "failed"}):
+        raise HTTPException(status_code=404, detail="No recorded preview")
+    workspace = Path(run.execution.workdir or settings.workspace_root).resolve()
+    image_name = hashlib.sha256(action_id.encode()).hexdigest() + ".png"
+    target = (workspace / ".clearact" / "previews" / image_name).resolve()
+    if not target.is_relative_to(workspace) or str(target) != result.metadata.get("screenshot_path"):
+        raise HTTPException(status_code=403, detail="Preview is outside its recorded workspace")
+    try:
+        with target.open("rb") as handle:
+            data = handle.read(5 * 1024 * 1024 + 1)
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Preview is unavailable") from exc
+    if len(data) > 5 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != result.metadata.get("content_sha256"):
+        raise HTTPException(status_code=409, detail="Preview changed after capture")
+    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store",
+                                                          "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/api/runs/{run_id}/approval")
@@ -1401,6 +1503,7 @@ async def start_run(request: StartRunRequest) -> dict:
         max_iterations=request.max_iterations or previous.max_iterations or settings.agent.max_iterations,
         max_tool_calls=request.max_tool_calls or previous.max_tool_calls or settings.agent.max_tool_calls_per_run,
         interface_language=request.interface_language or previous.interface_language or "zh",
+        task_mode=request.task_mode or previous.task_mode,
     )
     effective_autonomy = _effective_autonomy(request, settings.default_autonomy, run)
     rewound_revision_id: str | None = None
@@ -1467,7 +1570,12 @@ async def start_run(request: StartRunRequest) -> dict:
                     ),
                 ))
             run.workflow_steps = retained_steps
+            run.delivery_history = [report for report in run.delivery_history if report.turn_start < cutoff
+                                    and all(file.action_id in {action.id for message in run.messages
+                                                              for action in message.tool_calls}
+                                            for file in report.files)]
             run.workflow_plan = []
+            run.completed_plan_item_ids = []
             run.stage_notes.pop("understand", None)
             kept_actions = {
                 action.id
@@ -1490,6 +1598,11 @@ async def start_run(request: StartRunRequest) -> dict:
             ))
         run.status = RunStatus.CREATED
         run.completion_checks = []
+        if not (request.rewind_step_id or request.rewind_action_id):
+            archive_delivery(run)
+        else:
+            run.delivery_report = None
+        run.rejected_responses = []
         run.policy.autonomy_threshold = effective_autonomy
         run.policy.capability_rules.setdefault("browser_interaction", "ask")
         user_metadata: dict[str, Any] = {"attachments": attachments}

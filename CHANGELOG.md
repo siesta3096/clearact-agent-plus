@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 — 2026-10-18
+
+- Add development mode with immediately available file tools, workspace inspection, actual file delivery,
+  project structure/documentation requirements and verification after the final edit. Planning becomes
+  an optional progress aid for development tasks; discussion mode offers read-only tools.
+- Add bounded code search, exact text editing with snapshots/version checks, Python/JSON/HTML/JS checks,
+  and real local browser interactions, assertions, error collection and screenshots.
+- Generate development delivery summaries from recorded files/checks instead of unverified model prose.
+  Preserve the model draft for audit, permit bounded repair, and show incomplete delivery honestly.
+- Recheck unfinished plans on execution follow-ups; refresh runtime-owned guidance in the model view
+  without rewriting history. Record actual offered tool names. Preserve interrupted work and distinguish
+  exploratory read failures overcome by verified delivery from unresolved work.
+- Expose task modes, file lists, changes, historical deliveries, verified per-turn ZIP downloads and
+  preview screenshots in Web; add CLI task mode. Make native text writes atomic and hash-addressed.
+- Add real filesystem/test/browser regressions and an opt-in localhost model project evaluation.
+  See [development design and validation](docs/development-agent-2026-10-18.md) for evidence and limits.
+
 ## 0.2.4 — 2026-10-18
 
 - Replace the fixed 90-second model timeout with per-profile `requestTimeoutSeconds` (default

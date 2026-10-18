@@ -14,6 +14,10 @@ class RiskEvaluator:
         self._tool_risk_hints = tool_risk_hints or {}
 
     def assess(self, action: Action) -> RiskAssessment:
+        if action.tool_name == "preview_project":
+            return RiskAssessment(level=RiskLevel.YELLOW, category="browser_interaction", reasons=[
+                "在隔离浏览器中运行工作区网页、执行交互并保存截图；拦截外部 HTTP/WebSocket 请求。",
+            ])
         if action.tool_name == "execute_command":
             return RiskAssessment(
                 level=RiskLevel.RED, hard_stop=True, category="command_execute",
@@ -57,7 +61,8 @@ class RiskEvaluator:
                 reasons=["该操作属于必须单独确认的重大外部或系统行为。"],
                 category="destructive",
             )
-        if action.tool_name in {"web_search", "fetch_url", "list_files", "read_file", "read_pdf"}:
+        if action.tool_name in {"web_search", "fetch_url", "list_files", "read_file", "read_pdf", "search_files",
+                                "check_files"}:
             category = "web_read" if action.tool_name in {"web_search", "fetch_url"} else "local_read"
             return RiskAssessment(level=RiskLevel.WHITE, reasons=["只读操作，不会改变状态。"], category=category)
         if action.tool_name.startswith("mcp__"):

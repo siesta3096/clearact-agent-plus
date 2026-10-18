@@ -14,6 +14,26 @@ tools:
     display_name: 更新文件
     progress_template: "正在更新：{path}"
     base_risk: green
+  edit_file:
+    stage: act
+    display_name: 精确修改文件
+    progress_template: "正在修改：{path}"
+    base_risk: green
+  search_files:
+    stage: collect
+    display_name: 搜索项目代码
+    progress_template: "正在搜索代码"
+    base_risk: white
+  check_files:
+    stage: analyze
+    display_name: 检查项目文件
+    progress_template: "正在检查项目文件"
+    base_risk: white
+  preview_project:
+    stage: analyze
+    display_name: 预览并检查网页项目
+    progress_template: "正在本地预览项目"
+    base_risk: yellow
   execute_command:
     stage: act
     display_name: 执行命令

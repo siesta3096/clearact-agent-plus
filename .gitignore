@@ -5,6 +5,8 @@ __pycache__/
 .ruff_cache/
 .venv/
 .env
+.clearact/
+data/evals/
 clearact.json
 data/.clearact.lock
 data/runs/*
