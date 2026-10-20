@@ -15,6 +15,30 @@ def function_source(script, name):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
+def test_context_notice_uses_only_current_turn_events_and_valid_counts():
+    script = (webapp._ASSET_DIR / "app.js").read_text(encoding="utf-8")
+    scenario = r'''
+let language = 'zh';
+const escape = (value) => String(value).replaceAll('<', '&lt;');
+const currentTurnEvents = (detail) => detail.events.filter((event) => event.turn === 2);
+const detail = {events:[{turn:1,type:'context.compacted',data:{reasoning_characters_omitted:74119}}]};
+if (contextNoticeHtml(detail)) throw Error('Previous turn notice leaked');
+detail.events.push({turn:2,type:'context.compacted',title:'<img>',data:{reasoning_characters_omitted:74119}});
+let html = contextNoticeHtml(detail);
+if (!html.includes('上下文已自动整理') || !html.includes('记录中') || html.includes('<img>'))
+  throw Error('Missing truthful notice or untrusted title rendered');
+language = 'en';
+if (!contextNoticeHtml(detail).includes('Original messages')) throw Error('English notice missing');
+for (const count of [null, -1, 0, '<img>', Infinity, NaN]) {
+  detail.events[1].data.reasoning_characters_omitted = count;
+  if (contextNoticeHtml(detail)) throw Error('Invalid count rendered');
+}
+'''
+    subprocess.run(["node", "--eval", function_source(script, "contextNoticeHtml") + scenario],
+                   check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is not installed")
 def test_generated_file_links_are_escaped_deduplicated_and_only_successful():
     script = (webapp._ASSET_DIR / "app.js").read_text(encoding="utf-8")
     functions = function_source(script, "artifactsHtml")

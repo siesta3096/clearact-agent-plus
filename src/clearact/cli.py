@@ -51,6 +51,16 @@ class ConsoleApprovalGate(ApprovalGate):
         return answer.strip().lower() in {"y", "yes"}
 
 
+def _builtin_tools() -> tuple:
+    """Construct native tools without model calls, MCP connections or filesystem effects."""
+    return (
+        DeclareWorkflowPlanTool(), DeclareWorkflowStepTool(), ReviseWorkflowPlanTool(),
+        ListFilesTool(), ReadFileTool(), ReadPdfTool(), WriteFileTool(), EditFileTool(),
+        SearchFilesTool(), CheckFilesTool(), PreviewProjectTool(), ExecuteCommandTool(),
+        CreateDocumentTool(), CreateSpreadsheetTool(), WebSearchTool(), FetchUrlTool(),
+    )
+
+
 def _build_provider(profile: dict):
     provider = profile["provider"]
     if provider == "ollama":
@@ -225,24 +235,7 @@ async def _run_impl(
     event_bus.subscribe_sync(run_store.append_event)
 
     registry = ToolRegistry()
-    for tool in (
-        DeclareWorkflowPlanTool(),
-        DeclareWorkflowStepTool(),
-        ReviseWorkflowPlanTool(),
-        ListFilesTool(),
-        ReadFileTool(),
-        ReadPdfTool(),
-        WriteFileTool(),
-        EditFileTool(),
-        SearchFilesTool(),
-        CheckFilesTool(),
-        PreviewProjectTool(),
-        ExecuteCommandTool(),
-        CreateDocumentTool(),
-        CreateSpreadsheetTool(),
-        WebSearchTool(),
-        FetchUrlTool(),
-    ):
+    for tool in _builtin_tools():
         registry.register(tool)
     if computer_use_manager is not None:
         from clearact.tools.computer_use import ComputerUseTool
@@ -280,7 +273,8 @@ async def _run_impl(
     runner = AgentRunner(
         provider=provider,
         registry=registry,
-        context_builder=ContextBuilder(ContextBudget(profile["context_window"], settings.agent.context_budget_ratio)),
+        context_builder=ContextBuilder(ContextBudget(profile["context_window"], settings.agent.context_budget_ratio),
+                                       reasoning_history=profile.get("reasoning_history", "auto")),
         risk_evaluator=RiskEvaluator(workspace_root, settings.risk_rules, mcp_manager.risk_hints()),
         policy_engine=PolicyEngine(),
         approval_gate=approval_gate or ConsoleApprovalGate(console),

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from clearact.settings import load_settings
+from clearact.settings import _model_settings, load_settings
 
 PROJECT_ROOT = Path(__file__).parents[2]
 
@@ -38,3 +38,22 @@ def test_environment_style_keys_are_normalized_for_runtime(template_settings):
     profile = template_settings.models["profiles"]["openai-compatible"]
     assert profile["base_url"] == "https://api.example.com/v1"
     assert profile["api_key_env"] == "OPENAI_API_KEY"
+    assert profile["reasoning_history"] == "auto"
+
+
+@pytest.mark.parametrize("mode", ["auto", "full"])
+def test_reasoning_history_replay_can_be_configured(mode):
+    config = {"defaultProfile": "demo", "profiles": {"demo": {
+        "baseUrl": "http://localhost:1", "contextWindow": 100000, "reasoningHistory": mode,
+    }}}
+    assert _model_settings(config)["profiles"]["demo"]["reasoning_history"] == mode
+    assert config["profiles"]["demo"]["reasoningHistory"] == mode
+
+
+@pytest.mark.parametrize("mode", ["discard", None, []])
+def test_unknown_reasoning_history_setting_is_rejected(mode):
+    config = {"defaultProfile": "demo", "profiles": {"demo": {
+        "baseUrl": "http://localhost:1", "contextWindow": 100000, "reasoningHistory": mode,
+    }}}
+    with pytest.raises(ValueError, match="reasoningHistory"):
+        _model_settings(config)

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 — 2026-10-20
+
+- Prevent long returned thinking from blocking the next tool round: when over budget, omit
+  assistant reasoning from request copies before compacting useful transactions. Preserve the
+  complete run ledger, user constraints, tool arguments/results and call IDs. Support the
+  per-profile `reasoningHistory: full` override for strict reasoning replay.
+- Treat short status questions as read-only inquiries; report actual work and preserve unfinished
+  plan status instead of starting implementation again.
+- Stop with a recoverable review status when required context itself cannot fit; preserve completed
+  actions and files without automatically repeating them. Show context-compaction notices in Web.
+- Add a read-only saved-run replay and regressions covering long thinking, real file delivery and
+  browser interaction, genuine essential-content overflow, status inquiries and configuration.
+  See [failure analysis and validation](docs/maintenance-2026-10-20-context.md).
+
 ## 0.3.0 — 2026-10-18
 
 - Add development mode with immediately available file tools, workspace inspection, actual file delivery,

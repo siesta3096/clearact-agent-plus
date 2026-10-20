@@ -1,0 +1,21 @@
+{
+  "run_id": "run_2e85fc876291",
+  "recorded_status": "failed",
+  "status_question_mode": "discuss",
+  "full_replay_failure": {
+    "estimated": 92645,
+    "limit": 80000
+  },
+  "automatic": {
+    "reasoning_messages_omitted": 6,
+    "reasoning_characters_omitted": 184521,
+    "estimated_before": 237000,
+    "estimated_after": 43948
+  },
+  "selected_estimated_units": 43948,
+  "limit": 80000,
+  "latest_action_ids_preserved": true,
+  "user_and_system_messages_preserved": true,
+  "original_record_unchanged": true,
+  "model_requests_sent": 0
+}

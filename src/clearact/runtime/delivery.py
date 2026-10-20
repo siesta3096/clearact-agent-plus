@@ -18,6 +18,17 @@ def _affirmative_text(text: str) -> str:
                      if not re.search(r"不要|不用|无需|不必|禁止|先别|别再|do not|don't|never", clause))
 
 
+def is_status_inquiry(text: str) -> bool:
+    text = text.strip().rstrip("?？!！。.").strip().casefold()
+    return bool(re.fullmatch(
+        r"(?:(?:请问|你|现在|已经|都|到底|这个任务|任务|项目|游戏|代码)\s*)*"
+        r"(?:(?:做[完好]|写[完好]|弄好|完成|实现完|结束)(?:了)?(?:吗|么|没(?:有)?|了没|了没有)|"
+        r"进度(?:如何|怎么样|到哪了)|做到哪了|还有多久)|"
+        r"(?:are you|is it|is (?:the )?(?:task|project|game)) (?:done|finished|ready)(?: yet)?|"
+        r"(?:what(?:'s| is) the (?:status|progress)|any (?:update|progress))", text,
+    ))
+
+
 def archive_delivery(run: Run) -> None:
     if run.delivery_report and not any(report.turn_start == run.delivery_report.turn_start
                                        for report in run.delivery_history):
@@ -30,6 +41,7 @@ def infer_contract(run: Run) -> TaskContract:
                  if run.messages[index].role == "user"), -1)
     current = run.messages[turn].content or "" if turn >= 0 else run.goal
     requested = run.execution.task_mode
+    status_inquiry = is_status_inquiry(current)
     discussion = bool(re.search(
         r"^(?:(?:请|先|你|帮我|麻烦|please)\s*)*(?:解释|说明|分析|总结|讨论|为什么|为啥|如何|怎么|"
         r"explain|describe|discuss|why\b|how\b)|"
@@ -62,7 +74,7 @@ def infer_contract(run: Run) -> TaskContract:
     execution_only = bool(re.search(r"只(?:需|要)?(?:运行|执行|测试)|仅(?:运行|执行|测试)|"
                                     r"\b(?:only run|run (?:existing )?tests)\b", affirmative))
     mode = "discuss" if requested == "discuss" or (
-        discussion and not action and not execution_only
+        (discussion and not action and not execution_only) or status_inquiry
     ) else (
         "develop" if requested == "develop" or (software and action) else "execute"
     )

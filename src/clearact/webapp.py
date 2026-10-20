@@ -819,7 +819,9 @@ async def update_settings(request: SettingsRequest) -> dict:
                 update["requestTimeoutSeconds"] = validate_request_timeout(update["requestTimeoutSeconds"])
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-        for key in ("provider", "model", "baseUrl", "contextWindow", "requestTimeoutSeconds"):
+        if "reasoningHistory" in update and update["reasoningHistory"] not in ("auto", "full"):
+            raise HTTPException(status_code=422, detail="reasoningHistory must be auto or full")
+        for key in ("provider", "model", "baseUrl", "contextWindow", "requestTimeoutSeconds", "reasoningHistory"):
             if key in update and update[key] is not None:
                 raw["profiles"][name][key] = update[key]
         # API Key：非空则更新，空或缺失则保留原值

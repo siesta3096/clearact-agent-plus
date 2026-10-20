@@ -585,6 +585,13 @@ function currentTurnEvents(detail) {
   const start = events.findLastIndex((event) => event.type === "run.started");
   return start < 0 ? events : events.slice(start);
 }
+function contextNoticeHtml(detail) {
+  const event = [...currentTurnEvents(detail)].reverse().find((item) => item.type === "context.compacted");
+  const count = event?.data?.reasoning_characters_omitted;
+  if (!Number.isFinite(count) || count <= 0) return "";
+  const note = language === "zh" ? `为继续执行，后续请求中已精简 ${count.toLocaleString()} 字符的已返回思考。原始对话、思考和工具结果仍保存在记录中。` : `${count.toLocaleString()} characters of returned thinking were omitted from the next request. Original messages, thinking and tool results remain in the record.`;
+  return `<div class="connection-banner"><i></i><div><b>${language === "zh" ? "上下文已自动整理" : "Context compacted"}</b><small>${escape(note)}</small></div></div>`;
+}
 function connectionHtml(detail) {
   const event = [...currentTurnEvents(detail)].reverse().find((item) => ["model.waiting","model.responded","model.retrying","model.recovered"].includes(item.type));
   if (detail.run.status !== "running") return "";
@@ -787,7 +794,7 @@ function renderRun(detail, {force = false} = {}) {
   const previousRequestsOpen = Boolean($("#detail .prior-requests")?.open);
   const previousStagesOpen = Boolean($("#detail .prior-stages")?.open);
   stageEntranceObserver?.disconnect();
-  $("#detail").innerHTML = `${requestContextHtml(detail.run, previousRequestsOpen)}${runUsageHtml(detail)}${revisionHtml(detail.run)}${connectionHtml(detail)}${interruptionHtml(detail)}${completionReviewHtml(detail)}${acceptanceHtml(detail)}${deliveryHtml(detail)}${deliveryHistoryHtml(detail)}${workflowStagesHtml(detail, steps, calls, previousStagesOpen)}${deliverCard(detail)}`;
+  $("#detail").innerHTML = `${requestContextHtml(detail.run, previousRequestsOpen)}${runUsageHtml(detail)}${revisionHtml(detail.run)}${connectionHtml(detail)}${contextNoticeHtml(detail)}${interruptionHtml(detail)}${completionReviewHtml(detail)}${acceptanceHtml(detail)}${deliveryHtml(detail)}${deliveryHistoryHtml(detail)}${workflowStagesHtml(detail, steps, calls, previousStagesOpen)}${deliverCard(detail)}`;
   if (!reducedMotion.matches) document.querySelectorAll("#detail .stage-message").forEach((node, index) => {
     const key = `${detail.run.id}:${node.dataset.stepId || "result"}`;
     if (animatedStepKeys.has(key)) return;

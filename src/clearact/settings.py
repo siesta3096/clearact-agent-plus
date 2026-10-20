@@ -77,6 +77,9 @@ def _model_settings(config: dict[str, Any]) -> dict[str, Any]:
         profile["request_timeout_seconds"] = validate_request_timeout(
             profile.pop("requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS)
         )
+        profile["reasoning_history"] = profile.pop("reasoningHistory", "auto")
+        if profile["reasoning_history"] not in ("auto", "full"):
+            raise ValueError("reasoningHistory must be auto or full")
         profile["api_key"] = profile.pop("apiKey", "")
         if "apiKeyEnv" in profile:
             profile["api_key_env"] = profile.pop("apiKeyEnv")

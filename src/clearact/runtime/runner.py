@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
+from clearact.context.budget import ContextBudgetError
 from clearact.context.builder import ContextBuilder
 from clearact.domain.enums import DecisionOutcome, RunStatus, Stage
 from clearact.domain.errors import ToolValidationError
@@ -27,6 +28,7 @@ from clearact.runtime.delivery import (
     development_state,
     evaluate_delivery,
     infer_contract,
+    is_status_inquiry,
 )
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.events import (
@@ -125,6 +127,35 @@ class AgentRunner:
             run.delivery_report = await asyncio.to_thread(evaluate_delivery, run, self._tool_context)
             self._run_store.save_run(run)
             raise
+        except ContextBudgetError as exc:
+            english = run.execution.interface_language == "en"
+            note = (
+                "The required context still exceeds the request budget. Completed actions and original "
+                "messages are preserved; the unfinished task is marked for review. Reduce oversized input "
+                "or tool output, or use a model configuration with a larger supported context window."
+                if english else
+                "必要的任务要求或工具结果仍超出上下文预算，本轮已停止并标为需核对。"
+                "已执行操作、原始对话及文件记录均保留，不会自动重做。"
+                "请缩小过大的输入或工具输出，或使用支持更大上下文的模型配置后继续。"
+            )
+            if run.status == RunStatus.RUNNING:
+                transition(run, RunStatus.NEEDS_REVIEW)
+            for step in reversed(run.workflow_steps):
+                if step.status == "active":
+                    step.status = "needs_review"
+                    break
+            run.stage_notes["completion_review"] = note
+            run.delivery_report = await asyncio.to_thread(evaluate_delivery, run, self._tool_context)
+            run.messages.append(ChatMessage(role="assistant", content=note,
+                                            metadata={"error_type": "ContextBudgetError", "recoverable": True}))
+            self._run_store.save_run(run)
+            await self._event_bus.publish(RunEvent(
+                type="context.budget_exceeded", run_id=run.id,
+                title="Context needs review" if english else "上下文超出预算，执行记录已保留",
+                detail=note, data={"estimated": exc.estimated, "limit": exc.limit},
+            ))
+            await self._event_bus.publish(run_completed(run))
+            return note
         except Exception as exc:
             self._record_unfinished_actions(
                 run,
@@ -209,6 +240,15 @@ class AgentRunner:
                     "list_files", "read_file", "read_pdf", "search_files", "check_files", "web_search", "fetch_url",
                 }]
             context_messages = [*run.messages]
+            current_request = next((message.content or "" for message in reversed(run.messages)
+                                    if message.role == "user"), run.goal)
+            if is_status_inquiry(current_request):
+                context_messages.append(ChatMessage(role="system", content=(
+                    "The user is asking for current status, not starting a new implementation. "
+                    "Use read-only inspection if needed and report actual files, successful tool results "
+                    "and outstanding work. Plans, returned thinking and code pasted in chat do not prove "
+                    "files were written. Do not replan or start building in response to this status question."
+                )))
             # Upgrade runtime-owned guidance for resumed ledgers without rewriting history.
             if context_messages and context_messages[0].role == "system" and (
                 context_messages[0].content or ""
@@ -256,6 +296,16 @@ class AgentRunner:
             if completion_review_instruction:
                 context_messages.append(completion_review_instruction)
             messages, tools = self._context_builder.build(context_messages, definitions, recent_tool_names)
+            report = self._context_builder.last_build_report
+            if report.reasoning_messages_omitted:
+                english = run.execution.interface_language == "en"
+                await self._event_bus.publish(RunEvent(
+                    type="context.compacted", run_id=run.id,
+                    title="Long returned thinking omitted from request" if english else "已精简后续请求中的长思考内容",
+                    detail=("Original messages, tool calls and results remain in the run record." if english else
+                            "原始对话、完整思考内容、工具调用与结果仍保存在任务记录中。"),
+                    data={**report.__dict__, "reasoning_history": "auto"},
+                ))
             # Freeze the provider's input view: an uncompacted build may return
             # the mutable run.messages list, which grows as tools finish.
             messages = list(messages)
@@ -308,9 +358,18 @@ class AgentRunner:
                 unsuccessful = self._unsuccessful_phase_titles(run, passed_phases)
                 if run.task_contract.mode == "discuss":
                     pending, missing, changed, unworked, failed_checks, unsuccessful = [], [], [], [], [], []
+                    if is_status_inquiry(current_request):
+                        closed = set(run.completed_plan_item_ids) | {
+                            step.plan_item_id for step in run.workflow_steps
+                            if step.status in {"completed", "recovered"}
+                        }
+                        outstanding = [item.title for item in run.workflow_plan if item.id not in closed]
+                        if outstanding:
+                            failed_checks = ["原任务仍有未完成阶段：" + "、".join(outstanding)]
                 needs_review = bool(pending or missing or changed or unworked or failed_checks or unsuccessful)
                 if (
                     (pending or missing or changed or unworked or failed_checks)
+                    and not is_status_inquiry(current_request)
                     and (not completion_review_sent or (development and completion_review_count < 3
                          and tool_call_count > reviewed_action_count))
                     and iteration + 1 < self._max_iterations

@@ -38,6 +38,52 @@ def test_context_builder_compacts_over_budget_history():
     assert [message.model_dump() for message in messages] == before
 
 
+def test_long_latest_thinking_is_omitted_without_losing_tool_transaction_or_ledger():
+    transaction = tool_transaction(2, text="Actual tool result", prefix="latest")
+    transaction[0].reasoning_content = "thinking " * 10_000
+    messages = [ChatMessage(role="system", content="Original rules"),
+                ChatMessage(role="user", content="不要联网或覆盖用户文件。"), *transaction]
+    before = [message.model_dump() for message in messages]
+    builder = ContextBuilder(ContextBudget(4096, .8))
+    selected, tools = builder.build(messages, [], set())
+    assert not builder._budget.exceeds(selected, tools)
+    assert selected[-3].reasoning_content is None
+    assert selected[-3].tool_calls == transaction[0].tool_calls
+    assert selected[-2:] == transaction[-2:]
+    assert [message for message in selected if message.role in {"system", "user"}] == messages[:2]
+    assert [message.model_dump() for message in messages] == before
+    assert builder.last_build_report.reasoning_characters_omitted == len(transaction[0].reasoning_content)
+
+
+def test_reasoning_is_retained_when_it_fits_and_report_resets():
+    builder = ContextBuilder(ContextBudget(4096, .8))
+    transaction = tool_transaction()
+    transaction[0].reasoning_content = "x" * 10_000
+    builder.build(transaction, [], set())
+    transaction[0].reasoning_content = "small returned thinking"
+    selected, _ = builder.build(transaction, [], set())
+    assert selected[0] is transaction[0]
+    assert selected[0].reasoning_content == "small returned thinking"
+    assert builder.last_build_report.reasoning_messages_omitted == 0
+
+
+def test_full_reasoning_replay_mode_does_not_silently_strip_required_fields():
+    transaction = tool_transaction()
+    transaction[0].reasoning_content = "x" * 100_000
+    before = [message.model_dump() for message in transaction]
+    with pytest.raises(ContextBudgetError):
+        ContextBuilder(ContextBudget(4096, .8), reasoning_history="full").build(transaction, [], set())
+    assert [message.model_dump() for message in transaction] == before
+
+
+def test_oversized_tool_result_still_cannot_be_cut_after_reasoning_compaction():
+    transaction = tool_transaction(text="mandatory result " * 10_000)
+    transaction[0].reasoning_content = "x" * 100_000
+    with pytest.raises(ContextBudgetError):
+        ContextBuilder(ContextBudget(4096, .8)).build(transaction, [], set())
+    assert transaction[-1].content == "mandatory result " * 10_000
+
+
 def tool_transaction(count=1, *, text="result", prefix="call"):
     actions = [
         Action(id=f"{prefix}_{index}", tool_name="read_file", arguments={"path": "a.txt"}) for index in range(count)

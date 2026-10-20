@@ -72,8 +72,10 @@ def compact_messages(
     if budget.exceeds(result, definitions):
         estimate = budget.estimate(result, definitions)
         raise ContextBudgetError(
-            f"Essential context exceeds the input budget ({estimate} estimated tokens, limit {budget.limit}). "
+            f"Essential context exceeds the input budget ({estimate} conservative estimated units, "
+            f"limit {budget.limit}). "
             "The system instructions, all user requests, latest tool transaction and tool definitions "
-            "cannot be shortened safely. Increase the context window or reduce the request/tool output size."
+            "cannot be shortened safely. Increase the context window or reduce the request/tool output size.",
+            estimated=estimate, limit=budget.limit,
         )
     return result

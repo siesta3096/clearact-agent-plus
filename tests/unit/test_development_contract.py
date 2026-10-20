@@ -52,6 +52,23 @@ def test_development_preference_still_answers_explicit_explanation_without_forci
     assert infer_contract(run).mode == "discuss"
 
 
+@pytest.mark.parametrize("question", ["你现在做好了吗", "完成了吗？", "游戏写好了吗", "Are you done yet?"])
+def test_status_inquiry_does_not_restart_unfinished_implementation(question):
+    run = Run(goal="在空文件夹创建视觉小说游戏", messages=[
+        ChatMessage(role="user", content="在空文件夹创建视觉小说游戏"),
+        ChatMessage(role="assistant", content="请把代码手动保存为 index.html。"),
+        ChatMessage(role="user", content=question),
+    ])
+    assert infer_contract(run).mode == "discuss"
+
+
+def test_status_question_with_explicit_continuation_still_allows_development():
+    goal = "创建视觉小说游戏"
+    run = Run(goal=goal, messages=[ChatMessage(role="user", content=goal),
+                                   ChatMessage(role="user", content="做好了吗？没做好就继续实现。")])
+    assert infer_contract(run).mode == "develop"
+
+
 def test_delivery_preserves_user_changes_and_archive_remains_readable(workspace):
     goal = "修复 Python 程序 app.py。"
     run = Run(goal=goal, messages=[ChatMessage(role="user", content=goal)])

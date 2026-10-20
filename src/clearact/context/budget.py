@@ -7,6 +7,11 @@ from clearact.providers.attachments import attachment_prompt
 class ContextBudgetError(ValueError):
     """The essential conversation cannot fit the configured input budget."""
 
+    def __init__(self, message: str, *, estimated: int | None = None, limit: int | None = None) -> None:
+        super().__init__(message)
+        self.estimated = estimated
+        self.limit = limit
+
 
 class ContextBudget:
     def __init__(self, context_window: int, ratio: float) -> None:
