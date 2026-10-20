@@ -4,9 +4,39 @@ import pytest
 
 from clearact.domain.models import ChatMessage, Run, WorkflowPlanItem
 from clearact.runtime.continuation import continues_unfinished_plan
-from clearact.runtime.delivery import archive_delivery, development_state, evaluate_delivery, infer_contract
+from clearact.runtime.delivery import (
+    archive_delivery,
+    development_state,
+    evaluate_delivery,
+    infer_contract,
+    is_direct_answer_request,
+)
 from clearact.tools.base import ToolContext
 from clearact.tools.filesystem import WriteFileTool
+
+
+@pytest.mark.parametrize(("text", "direct"), [
+    ("只回复整数结果：17 乘以 23 等于多少？", True), ("17 * 23 = ?", True),
+    ("1 + 2 等于多少？", True), ("不用工具，直接解释递归。", True),
+    ("计算 17*23 并写入 result.txt", False), ("17*23的结果保存成文件", False),
+    ("今天股票涨了多少？", False), ("读取 math.txt，计算17*23", False),
+])
+def test_direct_answer_routing_does_not_swallow_file_or_external_tasks(text, direct):
+    assert is_direct_answer_request(text) is direct
+
+
+def test_named_source_file_repair_is_development_without_keyword_code():
+    goal = "修复 calc.py，保留 README.md 不改。"
+    run = Run(goal=goal, messages=[ChatMessage(role="user", content=goal)])
+    assert infer_contract(run).mode == "develop"
+    assert infer_contract(run).expected_paths == ["calc.py"]
+
+
+def test_source_reference_does_not_force_development_for_a_text_output():
+    goal = "读取 calc.py，生成 summary.txt。"
+    run = Run(goal=goal, messages=[ChatMessage(role="user", content=goal)])
+    assert infer_contract(run).mode == "execute"
+    assert infer_contract(run).expected_paths == ["summary.txt"]
 
 
 @pytest.mark.parametrize(("latest", "mode"), [

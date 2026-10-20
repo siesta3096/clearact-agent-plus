@@ -6,6 +6,37 @@ class ContextProtocolError(ValueError):
     """Conversation history contains an incomplete or unmatched tool call."""
 
 
+def excerpt_older_reads(messages: list[ChatMessage]) -> tuple[list[ChatMessage], int, int]:
+    """Keep located excerpts of older native text reads before removing whole transactions.
+
+    The latest tool transaction is untouched. Original messages stay in the ledger;
+    excerpts retain their tool role/call ID and point to missing source coordinates.
+    """
+    latest = max((index for index, message in enumerate(messages) if message.tool_calls), default=-1)
+    actions = {action.id: action for message in messages for action in message.tool_calls}
+    result, count, omitted = [], 0, 0
+    for index, message in enumerate(messages):
+        content = message.content or ""
+        action = actions.get(message.tool_call_id or "")
+        offset = action.arguments.get("offset", 0) if action else None
+        if (index < latest and message.role == "tool" and message.name == "read_file"
+                and message.metadata.get("status") == "succeeded" and len(content) > 1600
+                and action and action.tool_name == "read_file" and type(offset) is int):
+            missing = len(content) - 800
+            note = (f"\n[Earlier read_file excerpt: {missing} characters omitted. Original record retained. "
+                    f"Re-read the same path at offset {offset + 600} for the missing middle; "
+                    "do not infer omitted content.]\n")
+            result.append(message.model_copy(update={
+                "content": content[:600] + note + content[-200:],
+                "metadata": {**message.metadata, "context_excerpted": True},
+            }))
+            count += 1
+            omitted += missing
+        else:
+            result.append(message)
+    return result, count, omitted
+
+
 def message_groups(messages: list[ChatMessage]) -> list[list[ChatMessage]]:
     """Group each assistant tool plan and all its results into one transaction."""
     groups: list[list[ChatMessage]] = []

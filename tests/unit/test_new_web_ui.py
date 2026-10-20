@@ -37,6 +37,10 @@ detail.events[1].data.history_messages_omitted = 10;
 if (!contextNoticeHtml(detail).includes('10 old process messages')) throw Error('History-only compaction is hidden');
 detail.events[1].data.history_messages_omitted = '<img>';
 if (contextNoticeHtml(detail)) throw Error('Invalid history count rendered');
+detail.events[1].data.tool_results_excerpted = 3;
+if (!contextNoticeHtml(detail).includes('3 old read excerpts')) throw Error('Read excerpt notice missing');
+detail.events[1].data.tool_results_excerpted = '<img>';
+if (contextNoticeHtml(detail)) throw Error('Invalid excerpt count rendered');
 '''
     subprocess.run(["node", "--eval", function_source(script, "contextNoticeHtml") + scenario],
                    check=True, capture_output=True, text=True)

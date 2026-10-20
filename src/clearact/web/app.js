@@ -589,10 +589,12 @@ function contextNoticeHtml(detail) {
   const event = [...currentTurnEvents(detail)].reverse().find((item) => item.type === "context.compacted");
   const count = event?.data?.reasoning_characters_omitted;
   const history = event?.data?.history_messages_omitted;
+  const reads = event?.data?.tool_results_excerpted;
   const thinking = Number.isFinite(count) && count > 0 ? count : 0;
   const omitted = Number.isFinite(history) && history > 0 ? history : 0;
-  if (!thinking && !omitted) return "";
-  const note = language === "zh" ? `后续请求已省略 ${thinking.toLocaleString()} 字符的历史思考、${omitted} 条旧过程消息。完整对话和工具结果仍保存在记录中。` : `Omitted ${thinking.toLocaleString()} thinking characters and ${omitted} old process messages from the request. Original messages and tool results remain in the record.`;
+  const excerpts = Number.isFinite(reads) && reads > 0 ? reads : 0;
+  if (!thinking && !omitted && !excerpts) return "";
+  const note = language === "zh" ? `后续请求已精简 ${thinking.toLocaleString()} 字符的历史思考、${omitted} 条旧过程消息；${excerpts} 条旧读取保留首尾摘录及重读位置。完整对话和工具结果仍保存在记录中。` : `Omitted ${thinking.toLocaleString()} thinking characters and ${omitted} old process messages; kept ${excerpts} old read excerpts with re-read coordinates. Original messages and tool results remain in the record.`;
   return `<div class="connection-banner"><i></i><div><b>${language === "zh" ? "上下文已自动整理" : "Context compacted"}</b><small>${escape(note)}</small></div></div>`;
 }
 function connectionHtml(detail) {

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from clearact.context.budget import ContextBudget
-from clearact.context.compact import compact_messages, message_groups
+from clearact.context.compact import compact_messages, excerpt_older_reads, message_groups
 from clearact.context.tool_filter import ToolFilter
 from clearact.domain.models import ChatMessage, ToolDefinition
 
@@ -14,6 +14,8 @@ class ContextBuildReport:
     estimated_before: int = 0
     estimated_after: int = 0
     history_messages_omitted: int = 0
+    tool_results_excerpted: int = 0
+    tool_result_characters_omitted: int = 0
 
 
 class ContextBuilder:
@@ -51,6 +53,10 @@ class ContextBuilder:
                                  if message.role == "assistant" and message.reasoning_content else message
                                  for message in messages]
             estimated_after = self._budget.estimate(selected_messages, selected_tools)
+        excerpted, source_characters_omitted = 0, 0
+        if estimated_after > self._history_target_units:
+            selected_messages, excerpted, source_characters_omitted = excerpt_older_reads(selected_messages)
+            estimated_after = self._budget.estimate(selected_messages, selected_tools)
         if estimated_after > self._history_target_units:
             selected_messages = compact_messages(selected_messages, budget=self._budget, tools=selected_tools,
                                                  target_units=self._history_target_units)
@@ -61,5 +67,7 @@ class ContextBuilder:
             estimated_before=estimated_before,
             estimated_after=estimated_after,
             history_messages_omitted=len(messages) - len(selected_messages),
+            tool_results_excerpted=excerpted,
+            tool_result_characters_omitted=source_characters_omitted,
         )
         return selected_messages, selected_tools

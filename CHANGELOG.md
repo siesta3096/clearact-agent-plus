@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.3 — 2026-10-20
+
+- Add an opt-in real localhost-model evaluation with isolated state, actual HTTP token usage and
+  timings, independent code/browser/CSV/Office checks, and nullable usage for missing service counts.
+  Preserve all 82 requests across baseline, intermediate failures and retests in a sanitized report.
+- Omit tool schemas for explicit no-tool requests and self-contained arithmetic; omit Office schemas
+  for plain text/source targets unless affirmatively requested. Recognize named source modifications
+  as development while keeping source-reference text outputs in general execution.
+- Match multiline edits across LF/CRLF/CR while preserving untouched bytes, local line endings,
+  unique matching, version checks and snapshots.
+- Let new-file writes satisfy inspection through existing destination/version checks. Keep prior
+  inspection for existing-file changes and bound final-answer repair to one opportunity.
+- Interpret Excel `number` as a numeric format and normalize built-in aliases without altering
+  custom formats. Reopen original model-generated workbooks to verify numeric values and formulas.
+- Keep located excerpts of older successful text reads before dropping transactions; preserve full
+  original records and the latest transaction. Verify split-batch fact retention and cached re-reading.
+  See [real evaluation and limitations](docs/maintenance-2026-10-20-real-evaluation.md).
+
 ## 0.3.2 — 2026-10-20
 
 - Record the author's original simplicity, lightweight operation and context-efficiency principles.

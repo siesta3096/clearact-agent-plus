@@ -1,0 +1,1427 @@
+{
+  "date": "2026-10-20",
+  "model": "qwen/qwen3.8-27b",
+  "provider": "openai_compatible",
+  "environment": {
+    "os": "Windows",
+    "python": "3.12.9",
+    "context_window": 100000,
+    "input_budget_ratio": 0.8,
+    "reasoning_history": "auto",
+    "request_timeout_seconds": 600
+  },
+  "baseline_commit": "ce610a27d5a26e25bcb1bace44b8d8d847db9827",
+  "candidate_version": "0.3.3",
+  "prompts": {
+    "bare_math": "只回复整数结果：17 乘以 23 等于多少？",
+    "greeting": "你好",
+    "math": "只回复整数结果：17 乘以 23 等于多少？",
+    "file": "创建 hello.txt，内容严格为 ClearAct lightweight test，不要创建其他文件。",
+    "edit": "修复 calc.py 的 price_after_discount(price, discount)，discount 是折扣比例，100 元打八折传入 0.2 应返回 80。保留 README.md 不改，不要增加文件。完成后检查语法，不执行命令。",
+    "followup": "继续修改 calc.py：discount 必须在 0 到 1 之间，包含端点，超出范围抛出 ValueError。只修改 calc.py，保留 README.md 不改。完成后检查语法，不执行命令。",
+    "web": "创建单文件 index.html 计数器页面，初始显示 0，有加一和重置按钮。不要增加其他源文件或文档。完成后用浏览器实际测试加一、再次加一和重置，并断言数字分别为 1、2、0。离线完成。",
+    "data": "读取 orders.csv，按 category 合计 amount，将结果写入 summary.json，键为每个类别及 total，值为数值。只增加这个 JSON 文件，不要修改原始 CSV，离线完成。",
+    "office": "根据 orders.csv 生成 sales.xlsx 和 report.docx。Excel 的 Sales 工作表保留 category/amount 两列和三条原始记录，A5 为 TOTAL，B5 使用公式 =SUM(B2:B4)。Word 报告包含总金额和每类合计。只增加这两个原生文件，保留 CSV 不变，离线完成。",
+    "context": "读取 input_00.json 到 input_11.json，将每个文件内的 id 和 value 汇总到 summary.json，id 作键、value 作数值，必须覆盖全部十二个文件，不能猜数值。padding 是无关背景，不用复述。输入保持不变，只增加 summary.json，离线完成。"
+  },
+  "restrictions": {
+    "model_endpoint": "configured localhost",
+    "network_tools": false,
+    "external_mcp": false,
+    "general_command_tool": false,
+    "max_iterations": 16,
+    "max_tool_calls": 40,
+    "case_timeout_seconds": 240
+  },
+  "limits": [
+    "Single sequential sample per task in each phase; no temperature/seed override.",
+    "Intermediate phase overlapped the deterministic regression suite; final core did not.",
+    "Local cache/load not controlled; timings are observations, not a causal speed benchmark.",
+    "Tokens come from successful HTTP response usage; estimates are not substituted.",
+    "First baseline web harness required three assertions in one preview; independently rechecked separate previews without model calls.",
+    "Original intermediate elapsed_seconds include independent browser verification; final core excludes it.",
+    "Office layout not visually reviewed; formulas preserved, not recalculated here.",
+    "Context retest batched all reads; a separate deterministic split-batch regression verifies retention with the original 3/4/4/1 read schedule."
+  ],
+  "phases": [
+    {
+      "label": "baseline",
+      "version": "0.3.2",
+      "cases": [
+        {
+          "case": "bare_math",
+          "run_id": "run_7f21af0fd8c8",
+          "status": "direct_model",
+          "elapsed_seconds": 3.062,
+          "model_calls": 1,
+          "prompt_tokens": 68,
+          "completion_tokens": 76,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "correct_answer": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 70,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            3.062
+          ]
+        },
+        {
+          "case": "greeting",
+          "run_id": "run_c3b9c3b0bd33",
+          "status": "completed",
+          "elapsed_seconds": 2.032,
+          "model_calls": 1,
+          "prompt_tokens": 309,
+          "completion_tokens": 44,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "nonempty_reply": true,
+            "no_tools": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 18,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            2.0
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "math",
+          "run_id": "run_3efd971c6030",
+          "status": "completed",
+          "elapsed_seconds": 4.703,
+          "model_calls": 1,
+          "prompt_tokens": 3111,
+          "completion_tokens": 78,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "correct_answer": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 72,
+          "offered_schema_counts": [
+            12
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            4.703
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "file",
+          "run_id": "run_404c42431f69",
+          "status": "completed",
+          "elapsed_seconds": 3.0,
+          "model_calls": 2,
+          "prompt_tokens": 6320,
+          "completion_tokens": 114,
+          "usage_reported": true,
+          "tools": {
+            "write_file": 1
+          },
+          "checks": {
+            "exact_file": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 2,
+          "http_statuses": [
+            200,
+            200
+          ],
+          "reasoning_tokens": 47,
+          "offered_schema_counts": [
+            12,
+            12
+          ],
+          "input_reasoning_characters": [
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            1.718,
+            1.25
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "edit",
+          "run_id": "run_0c0cf1e7087f",
+          "status": "completed",
+          "elapsed_seconds": 8.422,
+          "model_calls": 4,
+          "prompt_tokens": 13778,
+          "completion_tokens": 358,
+          "usage_reported": true,
+          "tools": {
+            "list_files": 1,
+            "read_file": 2,
+            "edit_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "discount_20_percent": true,
+            "zero_discount": true,
+            "full_discount": true,
+            "readme_preserved": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 4,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 64,
+          "offered_schema_counts": [
+            12,
+            12,
+            12,
+            12
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            1.531,
+            2.328,
+            1.735,
+            2.782
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "followup",
+          "run_id": "run_0c0cf1e7087f",
+          "status": "completed",
+          "elapsed_seconds": 18.468,
+          "model_calls": 7,
+          "prompt_tokens": 29938,
+          "completion_tokens": 861,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 3,
+            "edit_file": 2,
+            "write_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "discount_20_percent": true,
+            "zero_discount": true,
+            "full_discount": true,
+            "readme_preserved": true,
+            "no_extra_files": true,
+            "reject_-0.1": true,
+            "reject_1.1": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 7,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 219,
+          "offered_schema_counts": [
+            12,
+            12,
+            12,
+            12,
+            12,
+            12,
+            12
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            1.5,
+            2.5,
+            1.812,
+            4.141,
+            2.312,
+            2.468,
+            3.657
+          ],
+          "failed_tools": [
+            "edit_file",
+            "edit_file"
+          ],
+          "task_mode": "execute"
+        },
+        {
+          "case": "web",
+          "run_id": "run_97f1424f6dc7",
+          "status": "needs_review",
+          "elapsed_seconds": 67.875,
+          "model_calls": 7,
+          "prompt_tokens": 28437,
+          "completion_tokens": 2962,
+          "usage_reported": true,
+          "tools": {
+            "write_file": 1,
+            "preview_project": 4,
+            "list_files": 1
+          },
+          "checks": {
+            "initial_zero": true,
+            "increment_one": true,
+            "increment_two": true,
+            "reset_zero": true,
+            "html_exists": true,
+            "no_extra_source_files": true,
+            "model_browser_assertions": true
+          },
+          "passed": false,
+          "error_type": null,
+          "http_requests": 7,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 1629,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            28.141,
+            3.797,
+            9.844,
+            6.125,
+            3.922,
+            4.375,
+            5.375
+          ],
+          "failed_tools": [],
+          "original_harness_checks": {
+            "html_exists": true,
+            "no_extra_source_files": true,
+            "model_browser_assertions": false
+          },
+          "verification_note": "Separate independent browser recheck passed. Runtime still ended needs_review; original summary retained.",
+          "task_mode": "develop"
+        }
+      ]
+    },
+    {
+      "label": "intermediate",
+      "version": "0.3.3",
+      "cases": [
+        {
+          "case": "bare_math",
+          "run_id": "run_4247f3aa7f5f",
+          "status": "direct_model",
+          "elapsed_seconds": 2.281,
+          "model_calls": 1,
+          "prompt_tokens": 68,
+          "completion_tokens": 69,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "correct_answer": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 63,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            2.281
+          ]
+        },
+        {
+          "case": "greeting",
+          "run_id": "run_ed819d38adcb",
+          "status": "completed",
+          "elapsed_seconds": 1.172,
+          "model_calls": 1,
+          "prompt_tokens": 309,
+          "completion_tokens": 32,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "nonempty_reply": true,
+            "no_tools": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 22,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            1.141
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "math",
+          "run_id": "run_8f66ad2f327d",
+          "status": "completed",
+          "elapsed_seconds": 1.516,
+          "model_calls": 1,
+          "prompt_tokens": 324,
+          "completion_tokens": 65,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "correct_answer": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 59,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            1.516
+          ],
+          "failed_tools": [],
+          "task_mode": "discuss"
+        },
+        {
+          "case": "file",
+          "run_id": "run_ca4020c99044",
+          "status": "completed",
+          "elapsed_seconds": 5.14,
+          "model_calls": 2,
+          "prompt_tokens": 4719,
+          "completion_tokens": 113,
+          "usage_reported": true,
+          "tools": {
+            "write_file": 1
+          },
+          "checks": {
+            "exact_file": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 2,
+          "http_statuses": [
+            200,
+            200
+          ],
+          "reasoning_tokens": 46,
+          "offered_schema_counts": [
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            3.875,
+            1.234
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "edit",
+          "run_id": "run_ddd0829c3e79",
+          "status": "completed",
+          "elapsed_seconds": 25.516,
+          "model_calls": 6,
+          "prompt_tokens": 18133,
+          "completion_tokens": 1154,
+          "usage_reported": true,
+          "tools": {
+            "list_files": 1,
+            "read_file": 2,
+            "edit_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "discount_20_percent": true,
+            "zero_discount": true,
+            "full_discount": true,
+            "readme_preserved": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 6,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 689,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            3.563,
+            1.781,
+            2.438,
+            3.406,
+            4.891,
+            9.36
+          ],
+          "failed_tools": [],
+          "task_mode": "develop"
+        },
+        {
+          "case": "followup",
+          "run_id": "run_ddd0829c3e79",
+          "status": "completed",
+          "elapsed_seconds": 15.156,
+          "model_calls": 4,
+          "prompt_tokens": 15531,
+          "completion_tokens": 628,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 2,
+            "edit_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "discount_20_percent": true,
+            "zero_discount": true,
+            "full_discount": true,
+            "readme_preserved": true,
+            "no_extra_files": true,
+            "reject_-0.1": true,
+            "reject_1.1": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 4,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 183,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            1.953,
+            2.812,
+            5.843,
+            4.484
+          ],
+          "failed_tools": [],
+          "task_mode": "develop"
+        },
+        {
+          "case": "web",
+          "run_id": "run_3bd3f887ecfa",
+          "status": "completed",
+          "elapsed_seconds": 31.641,
+          "model_calls": 4,
+          "prompt_tokens": 16865,
+          "completion_tokens": 1290,
+          "usage_reported": true,
+          "tools": {
+            "write_file": 1,
+            "preview_project": 2
+          },
+          "checks": {
+            "initial_zero": true,
+            "increment_one": true,
+            "increment_two": true,
+            "reset_zero": true,
+            "html_exists": true,
+            "no_extra_source_files": true,
+            "model_browser_assertions": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 4,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 354,
+          "offered_schema_counts": [
+            12,
+            12,
+            12,
+            12
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            9.734,
+            3.969,
+            9.172,
+            4.64
+          ],
+          "failed_tools": [
+            "preview_project"
+          ],
+          "task_mode": "develop"
+        }
+      ]
+    },
+    {
+      "label": "final_core",
+      "version": "0.3.3",
+      "cases": [
+        {
+          "case": "bare_math",
+          "run_id": "run_06c54d52c0d2",
+          "status": "direct_model",
+          "elapsed_seconds": 2.141,
+          "model_calls": 1,
+          "prompt_tokens": 68,
+          "completion_tokens": 60,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "correct_answer": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 54,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            2.141
+          ]
+        },
+        {
+          "case": "greeting",
+          "run_id": "run_29d8789ef522",
+          "status": "completed",
+          "elapsed_seconds": 2.016,
+          "model_calls": 1,
+          "prompt_tokens": 309,
+          "completion_tokens": 56,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "nonempty_reply": true,
+            "no_tools": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 28,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            2.0
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "math",
+          "run_id": "run_3f0b4dcdce2b",
+          "status": "completed",
+          "elapsed_seconds": 1.531,
+          "model_calls": 1,
+          "prompt_tokens": 324,
+          "completion_tokens": 63,
+          "usage_reported": true,
+          "tools": {},
+          "checks": {
+            "correct_answer": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 1,
+          "http_statuses": [
+            200
+          ],
+          "reasoning_tokens": 57,
+          "offered_schema_counts": [
+            0
+          ],
+          "input_reasoning_characters": [
+            0
+          ],
+          "per_call_seconds": [
+            1.516
+          ],
+          "failed_tools": [],
+          "task_mode": "discuss"
+        },
+        {
+          "case": "file",
+          "run_id": "run_8d1c21d6ce08",
+          "status": "completed",
+          "elapsed_seconds": 5.187,
+          "model_calls": 2,
+          "prompt_tokens": 4719,
+          "completion_tokens": 217,
+          "usage_reported": true,
+          "tools": {
+            "write_file": 1
+          },
+          "checks": {
+            "exact_file": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 2,
+          "http_statuses": [
+            200,
+            200
+          ],
+          "reasoning_tokens": 150,
+          "offered_schema_counts": [
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            3.656,
+            1.515
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "edit",
+          "run_id": "run_46147c5ab514",
+          "status": "completed",
+          "elapsed_seconds": 10.532,
+          "model_calls": 4,
+          "prompt_tokens": 11201,
+          "completion_tokens": 401,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 1,
+            "edit_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "discount_20_percent": true,
+            "zero_discount": true,
+            "full_discount": true,
+            "readme_preserved": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 4,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 189,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            1.766,
+            2.297,
+            2.719,
+            3.703
+          ],
+          "failed_tools": [],
+          "task_mode": "develop"
+        },
+        {
+          "case": "followup",
+          "run_id": "run_46147c5ab514",
+          "status": "completed",
+          "elapsed_seconds": 11.063,
+          "model_calls": 4,
+          "prompt_tokens": 13627,
+          "completion_tokens": 433,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 2,
+            "edit_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "discount_20_percent": true,
+            "zero_discount": true,
+            "full_discount": true,
+            "readme_preserved": true,
+            "no_extra_files": true,
+            "reject_-0.1": true,
+            "reject_1.1": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 4,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 112,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            2.016,
+            2.437,
+            2.797,
+            3.766
+          ],
+          "failed_tools": [],
+          "task_mode": "develop"
+        },
+        {
+          "case": "web",
+          "run_id": "run_147f98d90912",
+          "status": "completed",
+          "elapsed_seconds": 16.172,
+          "model_calls": 3,
+          "prompt_tokens": 9248,
+          "completion_tokens": 765,
+          "usage_reported": true,
+          "tools": {
+            "write_file": 1,
+            "preview_project": 1
+          },
+          "checks": {
+            "initial_zero": true,
+            "increment_one": true,
+            "increment_two": true,
+            "reset_zero": true,
+            "html_exists": true,
+            "no_extra_source_files": true,
+            "model_browser_assertions": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 3,
+          "http_statuses": [
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 145,
+          "offered_schema_counts": [
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            6.766,
+            3.922,
+            3.859
+          ],
+          "failed_tools": [],
+          "task_mode": "develop"
+        }
+      ]
+    },
+    {
+      "label": "formats_first",
+      "version": "0.3.3",
+      "cases": [
+        {
+          "case": "data",
+          "run_id": "run_888e2faa86e8",
+          "status": "completed",
+          "elapsed_seconds": 11.125,
+          "model_calls": 4,
+          "prompt_tokens": 10251,
+          "completion_tokens": 516,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 3,
+            "list_files": 1,
+            "write_file": 1
+          },
+          "checks": {
+            "correct_totals": true,
+            "source_unchanged": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 4,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 191,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            2.172,
+            3.875,
+            1.687,
+            3.36
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        },
+        {
+          "case": "office",
+          "run_id": "run_2785ffc3422f",
+          "status": "completed",
+          "elapsed_seconds": 26.296,
+          "model_calls": 5,
+          "prompt_tokens": 18434,
+          "completion_tokens": 1357,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 1,
+            "create_spreadsheet": 2,
+            "create_document": 2,
+            "list_files": 1
+          },
+          "checks": {
+            "raw_excel_rows": false,
+            "native_excel_formula": true,
+            "word_has_totals": true,
+            "source_unchanged": true,
+            "no_extra_files": true
+          },
+          "passed": false,
+          "error_type": null,
+          "http_requests": 5,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 625,
+          "offered_schema_counts": [
+            12,
+            12,
+            12,
+            12,
+            12
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            2.875,
+            5.141,
+            11.219,
+            1.594,
+            5.015
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        }
+      ]
+    },
+    {
+      "label": "office_retest",
+      "version": "0.3.3",
+      "cases": [
+        {
+          "case": "office",
+          "run_id": "run_cb22474936d0",
+          "status": "completed",
+          "elapsed_seconds": 11.016,
+          "model_calls": 3,
+          "prompt_tokens": 10116,
+          "completion_tokens": 460,
+          "usage_reported": true,
+          "tools": {
+            "read_file": 1,
+            "create_spreadsheet": 1,
+            "create_document": 1
+          },
+          "checks": {
+            "raw_excel_rows": true,
+            "native_excel_formula": true,
+            "word_has_totals": true,
+            "source_unchanged": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 3,
+          "http_statuses": [
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 73,
+          "offered_schema_counts": [
+            12,
+            12,
+            12
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            3.359,
+            4.5,
+            2.828
+          ],
+          "failed_tools": [],
+          "task_mode": "execute"
+        }
+      ]
+    },
+    {
+      "label": "context_before",
+      "version": "0.3.3",
+      "cases": [
+        {
+          "case": "context",
+          "run_id": "run_c398dc03303e",
+          "status": "failed",
+          "task_mode": "execute",
+          "elapsed_seconds": 35.468,
+          "model_calls": 7,
+          "prompt_tokens": 27633,
+          "completion_tokens": 1624,
+          "usage_reported": true,
+          "tools": {
+            "list_files": 1,
+            "read_file": 31
+          },
+          "checks": {
+            "verification_error": "FileNotFoundError"
+          },
+          "passed": false,
+          "error_type": "ModelRequestError",
+          "http_requests": 7,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 574,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            3.532,
+            3.515,
+            3.687,
+            5.031,
+            4.891,
+            10.406,
+            4.235
+          ],
+          "estimated_input_units": [
+            8211,
+            20356,
+            21884,
+            22148,
+            35844,
+            22236,
+            24581
+          ],
+          "compaction_reports": [
+            {
+              "reasoning_messages_omitted": 1,
+              "reasoning_characters_omitted": 67,
+              "estimated_before": 20446,
+              "estimated_after": 20356,
+              "history_messages_omitted": 0
+            },
+            {
+              "reasoning_messages_omitted": 2,
+              "reasoning_characters_omitted": 129,
+              "estimated_before": 34204,
+              "estimated_after": 21884,
+              "history_messages_omitted": 5
+            },
+            {
+              "reasoning_messages_omitted": 3,
+              "reasoning_characters_omitted": 203,
+              "estimated_before": 48238,
+              "estimated_after": 22148,
+              "history_messages_omitted": 10
+            },
+            {
+              "reasoning_messages_omitted": 4,
+              "reasoning_characters_omitted": 320,
+              "estimated_before": 76011,
+              "estimated_after": 35844,
+              "history_messages_omitted": 15
+            },
+            {
+              "reasoning_messages_omitted": 5,
+              "reasoning_characters_omitted": 412,
+              "estimated_before": 90151,
+              "estimated_after": 22236,
+              "history_messages_omitted": 24
+            },
+            {
+              "reasoning_messages_omitted": 6,
+              "reasoning_characters_omitted": 1438,
+              "estimated_before": 93579,
+              "estimated_after": 24581,
+              "history_messages_omitted": 24
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "context_retest",
+      "version": "0.3.3",
+      "cases": [
+        {
+          "case": "context",
+          "run_id": "run_1ba46c6c57a0",
+          "status": "completed",
+          "task_mode": "execute",
+          "elapsed_seconds": 30.156,
+          "model_calls": 5,
+          "prompt_tokens": 22913,
+          "completion_tokens": 1451,
+          "usage_reported": true,
+          "tools": {
+            "list_files": 1,
+            "read_file": 12,
+            "write_file": 1,
+            "check_files": 1
+          },
+          "checks": {
+            "all_values": true,
+            "sources_unchanged": true,
+            "no_extra_files": true
+          },
+          "passed": true,
+          "error_type": null,
+          "http_requests": 5,
+          "http_statuses": [
+            200,
+            200,
+            200,
+            200,
+            200
+          ],
+          "reasoning_tokens": 492,
+          "offered_schema_counts": [
+            10,
+            10,
+            10,
+            10,
+            10
+          ],
+          "input_reasoning_characters": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "per_call_seconds": [
+            2.547,
+            5.343,
+            9.922,
+            4.968,
+            7.281
+          ],
+          "estimated_input_units": [
+            8211,
+            10228,
+            49100,
+            25957,
+            26722
+          ],
+          "compaction_reports": [
+            {
+              "reasoning_messages_omitted": 1,
+              "reasoning_characters_omitted": 407,
+              "estimated_before": 10660,
+              "estimated_after": 10228,
+              "history_messages_omitted": 0,
+              "tool_results_excerpted": 0,
+              "tool_result_characters_omitted": 0
+            },
+            {
+              "reasoning_messages_omitted": 2,
+              "reasoning_characters_omitted": 474,
+              "estimated_before": 51639,
+              "estimated_after": 49100,
+              "history_messages_omitted": 2,
+              "tool_results_excerpted": 0,
+              "tool_result_characters_omitted": 0
+            },
+            {
+              "reasoning_messages_omitted": 3,
+              "reasoning_characters_omitted": 1080,
+              "estimated_before": 53106,
+              "estimated_after": 25957,
+              "history_messages_omitted": 0,
+              "tool_results_excerpted": 12,
+              "tool_result_characters_omitted": 28044
+            },
+            {
+              "reasoning_messages_omitted": 4,
+              "reasoning_characters_omitted": 1237,
+              "estimated_before": 54051,
+              "estimated_after": 26722,
+              "history_messages_omitted": 0,
+              "tool_results_excerpted": 12,
+              "tool_result_characters_omitted": 28044
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "core_totals": {
+    "before": {
+      "agent_turns": 6,
+      "model_requests": 22,
+      "prompt_tokens": 81893,
+      "completion_tokens": 4417,
+      "elapsed_seconds": 104.5
+    },
+    "final": {
+      "agent_turns": 6,
+      "model_requests": 15,
+      "prompt_tokens": 39428,
+      "completion_tokens": 1935,
+      "elapsed_seconds": 46.501
+    }
+  },
+  "all_trials": {
+    "cases": 26,
+    "http_requests": 82,
+    "prompt_tokens": 266753,
+    "completion_tokens": 15247
+  },
+  "office_alias_replay": {
+    "original_column_formats": [
+      "text",
+      "number"
+    ],
+    "reloaded_values": [
+      12.5,
+      7,
+      2.5,
+      "=SUM(B2:B4)"
+    ],
+    "passed": true,
+    "model_requests_sent": 0,
+    "original_failed_workbook_unchanged": true
+  },
+  "original_office_failure": {
+    "amounts_reopened_as_dates": [
+      "1900-01-12T12:00:00",
+      "1900-01-07T00:00:00",
+      "1900-01-02T12:00:00"
+    ],
+    "workbook_still_matches_original_write": true
+  },
+  "source_integrity_recheck": {
+    "files_checked": 30,
+    "byte_identical": true,
+    "model_requests_sent": 0
+  }
+}

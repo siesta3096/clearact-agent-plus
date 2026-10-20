@@ -105,6 +105,40 @@ def test_full_mode_retains_small_reasoning_and_unchanged_message_identity():
     assert selected[0] is messages[0]
 
 
+def test_older_read_excerpts_keep_facts_roles_and_ids_without_changing_the_ledger():
+    earlier = tool_transaction(text="HEADER_FACT\n" + "padding " * 1000 + "\nTAIL_FACT", prefix="older")
+    earlier[0].tool_calls[0].arguments["offset"] = 200
+    earlier[1].metadata = {"status": "succeeded"}
+    latest = tool_transaction(text="Latest actual result", prefix="latest")
+    messages = [ChatMessage(role="system", content="Rules"), ChatMessage(role="user", content="Keep constraints"),
+                *earlier, *latest]
+    before = [message.model_dump() for message in messages]
+    builder = ContextBuilder(ContextBudget(128000, .8), history_target_units=4000)
+    selected, _ = builder.build(messages, [], set())
+    excerpt = next(message for message in selected if message.tool_call_id == "older_0")
+    assert excerpt.role == "tool" and excerpt.name == "read_file"
+    assert "HEADER_FACT" in excerpt.content and "TAIL_FACT" in excerpt.content
+    assert "offset 800" in excerpt.content and "do not infer omitted content" in excerpt.content
+    assert excerpt.metadata["context_excerpted"] is True
+    assert selected[-2:] == latest
+    assert builder.last_build_report.tool_results_excerpted == 1
+    assert builder.last_build_report.history_messages_omitted == 0
+    assert [message.model_dump() for message in messages] == before
+
+
+def test_latest_native_read_stays_complete_even_above_soft_target():
+    earlier = tool_transaction(text="x" * 5000, prefix="older")
+    latest = tool_transaction(text="y" * 50000, prefix="latest")
+    for result in [earlier[1], latest[1]]:
+        result.metadata = {"status": "succeeded"}
+    selected, _ = ContextBuilder(ContextBudget(128000, .8), history_target_units=4000).build(
+        [*earlier, *latest], [], set(),
+    )
+    result = next(message for message in selected if message.tool_call_id == "latest_0")
+    assert result.content == "y" * 50000
+    assert not result.metadata.get("context_excerpted")
+
+
 def test_full_reasoning_replay_mode_does_not_silently_strip_required_fields():
     transaction = tool_transaction()
     transaction[0].reasoning_content = "x" * 100_000

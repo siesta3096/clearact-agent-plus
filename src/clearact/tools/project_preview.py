@@ -25,7 +25,8 @@ class PreviewProjectTool:
             "Run a workspace HTML project in an isolated headless browser, block external HTTP/WebSocket, collect "
             "page errors and a screenshot. Interactions need a unique visible selector. Returns current text and "
             "visible controls with selectors even after failed steps. Use expect_selector for a specific state "
-            "region so stale status text cannot satisfy an ending assertion. Each call starts fresh."
+            "region so stale status text cannot satisfy an ending assertion. Each call starts fresh; put a "
+            "sequence in one steps array. Set expect_text on each step to assert its intermediate state."
         ), parameters={"type": "object", "properties": {
             "entry": {"type": "string", "default": "index.html"},
             "steps": {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {

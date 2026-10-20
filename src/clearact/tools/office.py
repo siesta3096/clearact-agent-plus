@@ -20,6 +20,7 @@ MAX_CELLS = 100_000
 _INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 _NUMBER_FORMATS = {
     "general": "General",
+    "number": "General",
     "text": "@",
     "integer": "#,##0",
     "decimal": "#,##0.00",
@@ -131,6 +132,7 @@ def _spreadsheet_content(arguments: dict) -> list[dict]:
             sheet.get("column_formats", ["general"] * count), "column_formats", minimum=count, maximum=count
         )
         formats = [_text(fmt, "column format", limit=128, nonempty=True) for fmt in formats]
+        formats = [fmt.casefold() if fmt.casefold() in _NUMBER_FORMATS else fmt for fmt in formats]
         widths = _list(sheet.get("column_widths", [None] * count), "column_widths", minimum=count, maximum=count)
         if any(width is not None and (type(width) not in {int, float} or not 5 <= width <= 80) for width in widths):
             raise ToolValidationError("column widths must be null (automatic) or numbers from 5 to 80")
@@ -477,7 +479,7 @@ class CreateSpreadsheetTool(_OfficeTool):
             description=(
                 "Create or replace a native .xlsx Excel workbook with styled tables, filters, frozen headers, "
                 "and optional bar/line charts. Column formats/widths are arrays matching headers; formats accept "
-                "general/text/integer/decimal/percent/currency/date/datetime or Excel format strings. "
+                "general/number/text/integer/decimal/percent/currency/date/datetime or Excel format strings. "
                 "date/datetime cells accept ISO strings. Strings beginning '=' are formulas unless the format is text. "
                 "Formulas are preserved, not calculated here; Excel recalculates when opened. "
                 "Writes use file snapshots."

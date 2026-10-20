@@ -22,12 +22,14 @@ from clearact.runtime.checkpoints import create_checkpoint
 from clearact.runtime.completion import evaluate_completion_checks
 from clearact.runtime.continuation import continues_unfinished_plan
 from clearact.runtime.delivery import (
+    _affirmative_text,
     archive_delivery,
     delivery_summary,
     development_guidance,
     development_state,
     evaluate_delivery,
     infer_contract,
+    is_direct_answer_request,
     is_status_inquiry,
 )
 from clearact.runtime.event_bus import EventBus
@@ -202,7 +204,6 @@ class AgentRunner:
         stalled_rounds = 0
         completion_review_sent = False
         completion_review_count = 0
-        reviewed_action_count = -1
         completion_review_instruction: ChatMessage | None = None
         # A follow-up may reuse an older plan; only audit phases planned in this turn.
         continuing_plan = continues_unfinished_plan(run)
@@ -226,18 +227,20 @@ class AgentRunner:
                     )
                 )
             ]
-            if development:
-                user_text = " ".join(
+            if development or re.search(r"\.(?:txt|md|json|py|js|html|css)\b", current_request):
+                user_text = _affirmative_text("\n".join(
                     message.content or "" for message in run.messages if message.role == "user"
-                ).lower()
-                if not any(term in user_text for term in ("word", "excel", "docx", "xlsx", "电子表格", "工作簿")):
+                ))
+                if not any(term in user_text for term in (
+                    "word", "excel", "docx", "xlsx", "电子表格", "工作簿", "文档", "表格", "报告",
+                )):
                     definitions = [tool for tool in definitions
                                    if tool.name not in {"create_document", "create_spreadsheet"}]
             if run.task_contract.mode == "discuss":
                 definitions = [tool for tool in definitions if tool.name in {
                     "list_files", "read_file", "read_pdf", "search_files", "check_files", "web_search", "fetch_url",
                 }]
-            if _SIMPLE_CHAT.fullmatch(current_request):
+            if _SIMPLE_CHAT.fullmatch(current_request) or is_direct_answer_request(current_request):
                 definitions = []
             context_messages = [*run.messages]
             if is_status_inquiry(current_request):
@@ -295,7 +298,7 @@ class AgentRunner:
                 context_messages.append(completion_review_instruction)
             messages, tools = self._context_builder.build(context_messages, definitions, recent_tool_names)
             report = self._context_builder.last_build_report
-            if report.reasoning_messages_omitted or report.history_messages_omitted:
+            if report.reasoning_messages_omitted or report.history_messages_omitted or report.tool_results_excerpted:
                 english = run.execution.interface_language == "en"
                 await self._event_bus.publish(RunEvent(
                     type="context.compacted", run_id=run.id,
@@ -371,13 +374,11 @@ class AgentRunner:
                 if (
                     (pending or missing or changed or unworked or failed_checks)
                     and not is_status_inquiry(current_request)
-                    and (not completion_review_sent or (development and completion_review_count < 3
-                         and tool_call_count > reviewed_action_count))
+                    and not completion_review_sent
                     and iteration + 1 < self._max_iterations
                 ):
                     completion_review_sent = True
                     completion_review_count += 1
-                    reviewed_action_count = tool_call_count
                     run.rejected_responses.append(ChatMessage(
                         role="assistant", content=response.content, reasoning_content=reasoning,
                         metadata={"reason": "unmet_delivery", "attempt": completion_review_count},

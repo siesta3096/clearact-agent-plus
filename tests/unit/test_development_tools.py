@@ -54,6 +54,43 @@ def test_edit_preserves_crlf_and_can_restore_original_snapshot(workspace):
     assert target.read_bytes() == original
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_multiline_edit_matches_read_view_and_preserves_line_endings(workspace, newline):
+    from clearact.tools.filesystem import ReadFileTool
+
+    target = workspace / "calc.py"
+    original = ("def calc():" + newline + "    return 1" + newline).encode()
+    target.write_bytes(original)
+    ctx = context(workspace)
+    read = asyncio.run(ReadFileTool().execute({"path": "calc.py"}, ctx, "read"))
+    result = asyncio.run(EditFileTool().execute({
+        "path": "calc.py", "old_text": read.content,
+        "new_text": "def calc():\n    if True:\n        return 2\n",
+        "expected_sha256": hashlib.sha256(original).hexdigest(),
+    }, ctx, "edit"))
+    assert target.read_bytes() == ("def calc():\n    if True:\n        return 2\n".replace("\n", newline)).encode()
+    ctx.snapshot_store.restore(result.metadata["snapshot_id"])
+    assert target.read_bytes() == original
+
+
+def test_multiline_edit_preserves_mixed_line_endings_outside_replacement(workspace):
+    target = workspace / "mixed.txt"
+    target.write_bytes(b"keep\nold\r\npart\r\ntail\n")
+    asyncio.run(EditFileTool().execute({"path": "mixed.txt", "old_text": "old\npart", "new_text": "new\npart"},
+                                       context(workspace), "edit"))
+    assert target.read_bytes() == b"keep\nnew\r\npart\r\ntail\n"
+
+
+def test_newline_equivalent_duplicate_matches_are_still_ambiguous(workspace):
+    target = workspace / "mixed.txt"
+    original = b"same\r\ntext\nother\nsame\ntext\n"
+    target.write_bytes(original)
+    with pytest.raises(ToolValidationError, match="exactly once"):
+        asyncio.run(EditFileTool().execute({"path": "mixed.txt", "old_text": "same\ntext", "new_text": "new"},
+                                           context(workspace), "edit"))
+    assert target.read_bytes() == original
+
+
 @pytest.mark.parametrize(("name", "source", "passed"), [
     ("app.py", "def broken(:\n", False), ("data.json", "{bad}", False),
     ("data.json", '{"ok":true}', True), ("index.html", '<script src="missing.js"></script>', False),

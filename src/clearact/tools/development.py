@@ -98,7 +98,8 @@ class EditFileTool(_FilesystemTool):
     def definition(self) -> ToolDefinition:
         return ToolDefinition(name=self.name, description=(
             "Edit an existing UTF-8 file by replacing one unique exact text match. Read first; ambiguous/stale "
-            "matches are rejected. Optional expected_sha256 rejects any change since the known version."
+            "matches are rejected. Line endings match the normalized read view; preserve the file's line endings. "
+            "Optional expected_sha256 rejects any change since the known version."
         ), parameters={"type": "object", "properties": {
             "path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"},
             "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -125,9 +126,18 @@ class EditFileTool(_FilesystemTool):
             text = data.decode("utf-8")
         except UnicodeError as exc:
             raise ToolValidationError("edit_file only supports UTF-8 text") from exc
-        if text.count(old) != 1:
+        # read_file uses universal newlines. Match that view without rewriting unrelated
+        # bytes, and keep the replaced region's original newline convention.
+        normalized_old = old.replace("\r\n", "\n").replace("\r", "\n")
+        pattern = re.compile(r"(?:\r\n|\r|\n)".join(re.escape(part) for part in normalized_old.split("\n")))
+        match = pattern.search(text)
+        if match is None or pattern.search(text, match.end()) is not None:
             raise ToolValidationError("old_text must match exactly once; read more context before editing")
-        result = text.replace(old, new, 1).encode("utf-8")
+        newline = re.search(r"\r\n|\r|\n", match.group() or text) or re.search(r"\r\n|\r|\n", text)
+        replacement = new.replace("\r\n", "\n").replace("\r", "\n")
+        if newline:
+            replacement = replacement.replace("\n", newline.group())
+        result = (text[:match.start()] + replacement + text[match.end():]).encode("utf-8")
         # Re-resolve before committing so a changed parent symlink cannot redirect the edit.
         if self._resolve(context, raw, writing=True) != target:
             raise ToolValidationError("Target path changed during editing")

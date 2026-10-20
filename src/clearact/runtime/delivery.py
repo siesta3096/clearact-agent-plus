@@ -27,6 +27,17 @@ def is_status_inquiry(text: str) -> bool:
     ))
 
 
+def is_direct_answer_request(text: str) -> bool:
+    """Recognize explicit no-tool requests and simple self-contained arithmetic, not general questions."""
+    if re.search(r"(?:不要调用|不使用|不用|无需)工具|\b(?:without tools|do not use tools)\b", text.casefold()):
+        return True
+    return bool(re.fullmatch(
+        r"\s*(?:(?:请)?(?:只|直接)?(?:回复|回答|给出)(?:整数)?(?:计算)?结果\s*[：:]?\s*)?"
+        r"-?\d+(?:\.\d+)?(?:\s*(?:乘以|乘|加上|加|减去|减|除以|[+*/×÷−-])\s*-?\d+(?:\.\d+)?)+"
+        r"\s*(?:等于多少|是多少|等于|=)?[？?。.!！\s]*", text,
+    ))
+
+
 def archive_delivery(run: Run) -> None:
     if run.delivery_report and not any(report.turn_start == run.delivery_report.turn_start
                                        for report in run.delivery_history):
@@ -72,7 +83,7 @@ def infer_contract(run: Run) -> TaskContract:
     execution_only = bool(re.search(r"只(?:需|要)?(?:运行|执行|测试)|仅(?:运行|执行|测试)|"
                                     r"\b(?:only run|run (?:existing )?tests)\b", affirmative))
     mode = "discuss" if requested == "discuss" or (
-        (discussion and not action and not execution_only) or status_inquiry
+        (discussion and not action and not execution_only) or status_inquiry or is_direct_answer_request(current)
     ) else (
         "develop" if requested == "develop" or (software and action) else "execute"
     )
@@ -91,6 +102,11 @@ def infer_contract(run: Run) -> TaskContract:
                                  r"\b(?:save|write|create|generate|fix|edit|read|inspect|using)\b", prefix))
         if verbs and not re.search(r"读取|阅读|查看|参考|根据|对照|\b(?:read|inspect|using)\b", verbs[-1].group()):
             paths.append(match.group())
+    if mode == "execute" and action and any(Path(path).suffix.lower() in {
+        ".py", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".html", ".css", ".vue", ".go", ".rs",
+    } for path in paths):
+        mode = "develop"
+    # Reading source as reference does not make a text/data output a development task.
     # Paths from an existing plan remain a separate acceptance layer when work is explicitly continued.
     return TaskContract(mode=mode, turn_start=turn, project_creation=mode == "develop" and creating
                         and not previous_writes, expected_paths=list(dict.fromkeys(paths))[:20],
@@ -102,7 +118,9 @@ def development_guidance(contract: TaskContract, workspace: Path) -> str:
         return ""
     return (
         f"Development workspace: {workspace}. Inspect before editing and deliver files with the available "
-        "write_file/edit_file tools. Keep changes and structure proportional to the request; do not add "
+        "write_file/edit_file tools. Read named files directly; no separate directory listing is needed. "
+        "Reuse successful write/check results instead of rereading unchanged content. "
+        "Keep changes and structure proportional to the request; do not add "
         "extra files, architecture documents or progress phases just to satisfy a template. "
         "Verify after the final edit using check_files, preview_project or an approved test command. "
         "When tests are requested, run actual tests or asserted browser interactions; syntax alone is insufficient. "
@@ -150,9 +168,18 @@ def evaluate_delivery(run: Run, context: ToolContext) -> DeliveryReport | None:
     successful = [(index, message) for index, message in enumerate(current) if message.role == "tool"
                   and message.metadata.get("status") == "succeeded" and message.tool_call_id in actions
                   and actions[message.tool_call_id].tool_name == message.name]
-    first_edit = min((index for index, message in successful if message.name in FILE_WRITE_TOOLS), default=len(current))
-    inspection = any(index < first_edit and message.name in {"list_files", "read_file", "search_files"}
+    writes = [(index, message) for index, message in successful if message.name in FILE_WRITE_TOOLS]
+    first_edit = min((index for index, _ in writes), default=len(current))
+    inspected_before_edit = any(index < first_edit and message.name in {"list_files", "read_file", "search_files"}
                      for index, message in successful)
+    # New-file writes already check their destination/version. A directory read made
+    # after creation cannot retroactively satisfy a "before first write" condition.
+    first_writes = {}
+    for _, message in writes:
+        first_writes.setdefault(message.metadata.get("path"), message)
+    only_new_files = bool(first_writes) and all(message.metadata.get("existed") is False
+                                              for message in first_writes.values())
+    inspection = inspected_before_edit or only_new_files
     last_writes = {}
     for index, message in successful:
         if message.name in FILE_WRITE_TOOLS and isinstance(message.metadata.get("path"), str):
@@ -193,7 +220,9 @@ def evaluate_delivery(run: Run, context: ToolContext) -> DeliveryReport | None:
             issues.append("有产物无法安全核对")
     checks = [
         DeliveryCheck(key="inspection", title="检查工作区", passed=inspection,
-                      detail="已有成功的目录或文件检查记录。" if inspection else "尚未实际检查目录或代码。"),
+                      detail=("新建文件路径与原版本已由写入工具核对。"
+                              if only_new_files and not inspected_before_edit else
+                              "已有成功的目录或文件检查记录。" if inspection else "修改已有文件前未检查目录或代码。")),
         DeliveryCheck(key="files", title="实际文件交付", passed=bool(files) and not issues,
                       detail="；".join(issues) if issues else (
                           f"已核对 {len(files)} 个本轮写入文件。" if files else

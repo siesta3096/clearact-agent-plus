@@ -85,6 +85,26 @@ def test_document_contains_native_content_layout_and_page_numbers(workspace):
     assert 'w:instr="PAGE"' in document.sections[0].footer._element.xml
 
 
+@pytest.mark.parametrize("number_format", ["number", "Number", "NUMBER"])
+def test_number_format_alias_roundtrips_numbers_instead_of_dates(workspace, number_format):
+    from openpyxl import load_workbook
+
+    result = asyncio.run(CreateSpreadsheetTool().execute({
+        "path": "sales.xlsx", "sheets": [{"name": "Sales", "headers": ["category", "amount"],
+            "rows": [["A", 12.5], ["B", 7], ["A", 2.5], ["TOTAL", "=SUM(B2:B4)"]],
+            "column_formats": ["text", number_format]}],
+    }, ToolContext(workspace), "excel"))
+    assert result.ok
+    workbook = load_workbook(workspace / "sales.xlsx", data_only=False)
+    try:
+        sheet = workbook["Sales"]
+        assert [sheet[f"B{row}"].value for row in range(2, 5)] == [12.5, 7, 2.5]
+        assert sheet["B2"].number_format == "General"
+        assert sheet["B5"].value == "=SUM(B2:B4)"
+    finally:
+        workbook.close()
+
+
 def test_spreadsheet_preserves_types_formats_formulas_and_native_charts(workspace):
     from openpyxl import load_workbook
 
