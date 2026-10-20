@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.4 — 2026-10-20
+
+- Replay the actual failed follow-up in isolated copies. Recognize possessive status questions such as
+  “现在你的任务完成了吗” and answer from recorded actions and current file hashes without a model call.
+  Preserve outstanding checks and permission boundaries instead of trusting a generated completion claim.
+- Keep a bounded set of current-turn file reads available across requests. Prefer located excerpts
+  over dropping older observed facts; fall back to excerpts/removal when the hard budget requires it.
+- Wait for asynchronous browser text assertions and stop on the first failed assertion. Add bounded
+  per-step waits, and expose character offsets in search results for accurate targeted reads.
+- Stop repeated cached/denied actions with a recoverable review result and saved-file details;
+  distinguish cached-read loops from actual permission denials. Clarify unsupported static checks.
+- Document intermediate failures, the 240-second continuation timeout after a passing browser check,
+  and the remaining long-generation limitation in the [follow-up report](docs/maintenance-2026-10-20-followup.md).
+
 ## 0.3.3 — 2026-10-20
 
 - Add an opt-in real localhost-model evaluation with isolated state, actual HTTP token usage and

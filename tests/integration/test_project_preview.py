@@ -78,3 +78,28 @@ def test_state_assertion_cannot_be_satisfied_by_stale_status_text(workspace):
                                                      ToolContext(workspace), "specific_state"))
     assert not result.ok
     assert "Expected final text missing" in result.content
+
+
+def test_assertions_wait_for_typewriter_text_and_failed_steps_stop_the_sequence(workspace):
+    (workspace / "index.html").write_text(
+        '<html><button id="start" onclick="setTimeout(()=>document.querySelector(\'#scene\').textContent='
+        '\'Ready\',700)">Start</button><p id="scene">Waiting</p>'
+        '<button id="later" onclick="document.querySelector(\'#scene\').textContent=\'Wrong\'">Later</button></html>',
+        encoding="utf-8",
+    )
+
+    async def check():
+        tool, ctx = PreviewProjectTool(), ToolContext(workspace)
+        passed = await tool.execute({"steps": [{"selector": "#start", "action": "click",
+                                               "expect_text": "Ready", "expect_selector": "#scene"}]},
+                                    ctx, "async_text")
+        assert passed.ok, passed.content
+        failed = await tool.execute({"steps": [
+            {"selector": "#start", "action": "click", "expect_text": "Missing", "expect_selector": "#scene"},
+            {"selector": "#later", "action": "click"},
+        ]}, ctx, "stop_after_assertion")
+        assert not failed.ok
+        assert failed.metadata["steps_completed"] == 1
+        assert "Ready" in failed.metadata["text"] and "Wrong" not in failed.metadata["text"]
+
+    asyncio.run(check())

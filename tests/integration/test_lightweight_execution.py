@@ -9,6 +9,30 @@ from clearact.domain.enums import RunStatus
 from clearact.domain.models import LLMResponse
 
 
+def test_current_working_files_remain_available_without_alternating_rereads(workspace):
+    from clearact.context.budget import ContextBudget
+    from clearact.context.builder import ContextBuilder
+
+    for name in ("a", "b", "c"):
+        (workspace / f"{name}.txt").write_text("x" * 1300 + f"MIDDLE_{name}" + "y" * 1300, encoding="utf-8")
+
+    class WorkingProvider(ScriptedProvider):
+        async def chat(self, messages, tools):
+            if len(self.inputs) == 3:
+                observed = "\n".join(message.content or "" for message in messages if message.role == "tool")
+                assert all(f"MIDDLE_{name}" in observed for name in ("a", "b", "c"))
+            return await super().chat(messages, tools)
+
+    provider = WorkingProvider([
+        *[LLMResponse(tool_calls=[call("read_file", path=f"{name}.txt")]) for name in ("a", "b", "c")],
+        LLMResponse(content="MIDDLE_a MIDDLE_b MIDDLE_c"),
+    ])
+    runner, _ = developer(workspace, provider)
+    runner._context_builder = ContextBuilder(ContextBudget(100000, .8), history_target_units=10000)
+    asyncio.run(runner.run(_run("读取 a.txt、b.txt、c.txt 的中间标记。")))
+    assert len(provider.inputs) == 4
+
+
 def test_small_file_task_writes_immediately_and_finishes_in_two_requests(workspace):
     provider = ScriptedProvider([
         LLMResponse(tool_calls=[call("write_file", path="hello.txt", content="hello\n")]),
@@ -22,6 +46,24 @@ def test_small_file_task_writes_immediately_and_finishes_in_two_requests(workspa
     assert len(provider.inputs) == 2
     assert run.workflow_plan == []
     assert [message.name for message in run.messages if message.role == "tool"] == ["write_file"]
+
+
+def test_cached_read_loop_keeps_saved_files_and_reports_review_instead_of_permission_failure(workspace):
+    provider = ScriptedProvider([
+        LLMResponse(tool_calls=[call("write_file", path="app.py", content="print('hello')\n")]),
+        LLMResponse(tool_calls=[call("check_files", paths=["app.py"])]),
+        *[LLMResponse(tool_calls=[call("read_file", path="app.py")]) for _ in range(4)],
+    ])
+    runner, store = developer(workspace, provider)
+    run = _run("创建 Python 项目 app.py。")
+    final = asyncio.run(runner.run(run))
+    assert run.status is RunStatus.NEEDS_REVIEW
+    assert run.delivery_report.files[0].path == "app.py"
+    assert (workspace / "app.py").read_text() == "print('hello')\n"
+    assert "app.py" in final and "反复读取" in final
+    assert "权限" not in final
+    assert store.load_run(run.id).messages[-1].metadata["recoverable"] is True
+    assert "last tool round made no progress" in provider.inputs[-1][-1].content
 
 
 def test_no_plan_does_not_allow_claiming_an_unwritten_explicit_file(workspace):
@@ -152,7 +194,7 @@ def test_rereading_a_missing_excerpt_middle_returns_the_original_cached_text(wor
         LLMResponse(content="MIDDLE_MARKER"),
     ])
     runner, _ = developer(workspace, provider)
-    runner._context_builder = ContextBuilder(ContextBudget(128000, .8), history_target_units=12000)
+    runner._context_builder = ContextBuilder(ContextBudget(128000, .8), history_target_units=4000)
     run = _run("读取 a.txt 和 b.txt，再检查 a.txt 的中间标记。")
     asyncio.run(runner.run(run))
     assert any(message.metadata.get("context_excerpted") for message in provider.inputs[2])

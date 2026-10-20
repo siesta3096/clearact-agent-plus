@@ -6,7 +6,25 @@ class ContextProtocolError(ValueError):
     """Conversation history contains an incomplete or unmatched tool call."""
 
 
-def excerpt_older_reads(messages: list[ChatMessage]) -> tuple[list[ChatMessage], int, int]:
+def working_read_calls(messages: list[ChatMessage], budget: ContextBudget, limit: int) -> set[str]:
+    """Retain a bounded set of recently inspected files in the current user turn."""
+    boundary = max((index for index, message in enumerate(messages) if message.role == "user"), default=-1)
+    selected, paths, used = set(), set(), 0
+    for group in reversed(message_groups(messages[boundary + 1:])):
+        reads = [message for message in group if message.role == "tool" and message.name == "read_file"
+                 and message.metadata.get("status") == "succeeded"
+                 and isinstance(message.metadata.get("path"), str)]
+        fresh = [message for message in reads if message.metadata["path"] not in paths]
+        paths.update(message.metadata["path"] for message in reads)
+        cost = budget.estimate(group, [])
+        if fresh and used + cost <= limit:
+            selected.update(message.tool_call_id for message in fresh)
+            used += cost
+    return selected
+
+
+def excerpt_older_reads(messages: list[ChatMessage], protected: set[str] | None = None
+                        ) -> tuple[list[ChatMessage], int, int]:
     """Keep located excerpts of older native text reads before removing whole transactions.
 
     The latest tool transaction is untouched. Original messages stay in the ledger;
@@ -20,6 +38,7 @@ def excerpt_older_reads(messages: list[ChatMessage]) -> tuple[list[ChatMessage],
         action = actions.get(message.tool_call_id or "")
         offset = action.arguments.get("offset", 0) if action else None
         if (index < latest and message.role == "tool" and message.name == "read_file"
+                and message.tool_call_id not in (protected or set())
                 and message.metadata.get("status") == "succeeded" and len(content) > 1600
                 and action and action.tool_name == "read_file" and type(offset) is int):
             missing = len(content) - 800
@@ -69,6 +88,7 @@ def compact_messages(
     budget: ContextBudget | None = None,
     tools: list[ToolDefinition] | None = None,
     target_units: int | None = None,
+    protected_calls: set[str] | None = None,
 ) -> list[ChatMessage]:
     """Retain essential messages and recent complete transactions within budget.
 
@@ -84,12 +104,16 @@ def compact_messages(
     groups = message_groups(messages)
     required = {index for index, group in enumerate(groups) if group[0].role == "system"}
     required.update(index for index, group in enumerate(groups) if group[0].role == "user")
+    required.update(index for index, group in enumerate(groups)
+                    if any(message.tool_call_id in (protected_calls or set()) for message in group))
     tool_groups = [index for index, group in enumerate(groups) if group[0].tool_calls]
     if tool_groups:
         required.add(tool_groups[-1])
     if groups:
         required.add(len(groups) - 1)
-    selected = required | set(range(max(0, len(groups) - keep_recent), len(groups)))
+    excerpts = {index for index, group in enumerate(groups)
+                if any(message.metadata.get("context_excerpted") for message in group)}
+    selected = required | excerpts | set(range(max(0, len(groups) - keep_recent), len(groups)))
 
     def retained_messages() -> list[ChatMessage]:
         return [message for index, group in enumerate(groups) if index in selected for message in group]
@@ -99,9 +123,16 @@ def compact_messages(
         return result
     definitions = tools or []
     target = min(budget.limit, target_units) if target_units is not None else budget.limit
-    for index in sorted(selected - required):
+    for index in sorted(selected - required - excerpts):
         if budget.estimate(result, definitions) <= target:
             return result
+        selected.remove(index)
+        result = retained_messages()
+    # Located source facts are worth retaining beyond the soft target, but remain
+    # optional if required instructions and the latest transaction need the hard limit.
+    for index in sorted((selected & excerpts) - required):
+        if not budget.exceeds(result, definitions):
+            break
         selected.remove(index)
         result = retained_messages()
     if budget.exceeds(result, definitions):

@@ -31,6 +31,7 @@ from clearact.runtime.delivery import (
     infer_contract,
     is_direct_answer_request,
     is_status_inquiry,
+    status_summary,
 )
 from clearact.runtime.event_bus import EventBus
 from clearact.runtime.events import (
@@ -202,6 +203,7 @@ class AgentRunner:
         tool_call_count = 0
         invalid_plan_attempts = 0
         stalled_rounds = 0
+        round_results: list[ChatMessage] = []
         completion_review_sent = False
         completion_review_count = 0
         completion_review_instruction: ChatMessage | None = None
@@ -210,6 +212,15 @@ class AgentRunner:
         review_new_plan = not run.workflow_plan or continuing_plan
         current_request = next((message.content or "" for message in reversed(run.messages)
                                 if message.role == "user"), run.goal)
+        if is_status_inquiry(current_request):
+            final, needs_review = await asyncio.to_thread(status_summary, run, self._tool_context)
+            if needs_review:
+                run.stage_notes["completion_review"] = final
+            run.messages.append(ChatMessage(role="assistant", content=final, metadata={"source": "recorded_status"}))
+            transition(run, RunStatus.NEEDS_REVIEW if needs_review else RunStatus.COMPLETED)
+            self._run_store.save_run(run)
+            await self._event_bus.publish(run_completed(run))
+            return final
 
         for iteration in range(self._max_iterations):
             definitions = self._registry.definitions()
@@ -243,13 +254,6 @@ class AgentRunner:
             if _SIMPLE_CHAT.fullmatch(current_request) or is_direct_answer_request(current_request):
                 definitions = []
             context_messages = [*run.messages]
-            if is_status_inquiry(current_request):
-                context_messages.append(ChatMessage(role="system", content=(
-                    "The user is asking for current status, not starting a new implementation. "
-                    "Use read-only inspection if needed and report actual files, successful tool results "
-                    "and outstanding work. Plans, returned thinking and code pasted in chat do not prove "
-                    "files were written. Do not replan or start building in response to this status question."
-                )))
             # Upgrade runtime-owned guidance for resumed ledgers without rewriting history.
             if context_messages and context_messages[0].role == "system" and (
                 context_messages[0].content or ""
@@ -296,6 +300,14 @@ class AgentRunner:
                 context_messages.append(ChatMessage(role="system", content=policy_guidance))
             if completion_review_instruction:
                 context_messages.append(completion_review_instruction)
+            if stalled_rounds and any(message.name in {"read_file", "list_files", "search_files"}
+                                      for message in round_results):
+                context_messages.append(ChatMessage(role="system", content=(
+                    "The last tool round made no progress. Cached reads already supplied unchanged content; "
+                    "do not repeat them. read_file offset counts characters, not lines; search_files returns "
+                    "the matching offset. Use the observed failure to choose a different authorized action, "
+                    "or finish with an honest account of saved files and remaining blockers."
+                )))
             messages, tools = self._context_builder.build(context_messages, definitions, recent_tool_names)
             report = self._context_builder.last_build_report
             if report.reasoning_messages_omitted or report.history_messages_omitted or report.tool_results_excerpted:
@@ -362,18 +374,9 @@ class AgentRunner:
                 unsuccessful = self._unsuccessful_phase_titles(run, passed_phases)
                 if run.task_contract.mode == "discuss":
                     pending, missing, changed, unworked, failed_checks, unsuccessful = [], [], [], [], [], []
-                    if is_status_inquiry(current_request):
-                        closed = set(run.completed_plan_item_ids) | {
-                            step.plan_item_id for step in run.workflow_steps
-                            if step.status in {"completed", "recovered"}
-                        }
-                        outstanding = [item.title for item in run.workflow_plan if item.id not in closed]
-                        if outstanding:
-                            failed_checks = ["原任务仍有未完成阶段：" + "、".join(outstanding)]
                 needs_review = bool(pending or missing or changed or unworked or failed_checks or unsuccessful)
                 if (
                     (pending or missing or changed or unworked or failed_checks)
-                    and not is_status_inquiry(current_request)
                     and not completion_review_sent
                     and iteration + 1 < self._max_iterations
                 ):
@@ -792,13 +795,37 @@ class AgentRunner:
             ):
                 stalled_rounds += 1
                 if stalled_rounds >= 3:
-                    language = run.execution.interface_language or "zh"
-                    raise ModelRequestError(
-                        "模型连续三轮只提出被跳过或未获授权的操作，已停止以避免空转。"
-                        "请调整任务说明或权限后重试。" if language == "zh" else
-                        "The model proposed only skipped or unauthorized actions for three rounds. "
-                        "Stopped to avoid a loop; revise the task or permissions and retry."
+                    english = run.execution.interface_language == "en"
+                    denied = any(message.metadata.get("status") == "denied" for message in round_results)
+                    note = (
+                        "Repeated unauthorized actions; execution stopped for review. Check the denied actions."
+                        if english and denied else
+                        "Repeated cached actions made no progress; execution stopped for review."
+                        if english else
+                        "模型反复请求未获授权的操作，本轮已停止并标为需核对；请查看被拒绝的操作。"
+                        if denied else
+                        "模型反复读取已提供的内容，未能继续推进，本轮已停止并标为需核对。"
                     )
+                    transition(run, RunStatus.NEEDS_REVIEW)
+                    for step in reversed(run.workflow_steps):
+                        if step.status == "active":
+                            step.status = "needs_review"
+                            break
+                    run.stage_notes["completion_review"] = note
+                    run.delivery_report = await asyncio.to_thread(evaluate_delivery, run, self._tool_context)
+                    if run.delivery_report:
+                        note += "\n\n" + delivery_summary(run)
+                    run.messages.append(ChatMessage(role="assistant", content=note, metadata={
+                        "reason": "stalled_actions", "recoverable": True,
+                    }))
+                    self._run_store.save_run(run)
+                    await self._event_bus.publish(RunEvent(
+                        type="completion.review_requested", run_id=run.id,
+                        title="Execution needs review" if english else "执行需要核对", detail=note,
+                        data={"reason": "stalled_actions", "recoverable": True},
+                    ))
+                    await self._event_bus.publish(run_completed(run))
+                    return note
             else:
                 stalled_rounds = 0
 

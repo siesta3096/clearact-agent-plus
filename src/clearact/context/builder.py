@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from clearact.context.budget import ContextBudget
-from clearact.context.compact import compact_messages, excerpt_older_reads, message_groups
+from clearact.context.budget import ContextBudget, ContextBudgetError
+from clearact.context.compact import compact_messages, excerpt_older_reads, message_groups, working_read_calls
 from clearact.context.tool_filter import ToolFilter
 from clearact.domain.models import ChatMessage, ToolDefinition
 
@@ -54,12 +54,23 @@ class ContextBuilder:
                                  for message in messages]
             estimated_after = self._budget.estimate(selected_messages, selected_tools)
         excerpted, source_characters_omitted = 0, 0
+        protected = set()
         if estimated_after > self._history_target_units:
-            selected_messages, excerpted, source_characters_omitted = excerpt_older_reads(selected_messages)
+            protected = working_read_calls(selected_messages, self._budget, self._history_target_units)
+            selected_messages, excerpted, source_characters_omitted = excerpt_older_reads(selected_messages, protected)
             estimated_after = self._budget.estimate(selected_messages, selected_tools)
         if estimated_after > self._history_target_units:
-            selected_messages = compact_messages(selected_messages, budget=self._budget, tools=selected_tools,
-                                                 target_units=self._history_target_units)
+            try:
+                selected_messages = compact_messages(selected_messages, budget=self._budget, tools=selected_tools,
+                                                     target_units=self._history_target_units,
+                                                     protected_calls=protected)
+            except ContextBudgetError:
+                # A working read is optional when enduring user requirements need the hard budget.
+                selected_messages, extra, omitted = excerpt_older_reads(selected_messages)
+                excerpted += extra
+                source_characters_omitted += omitted
+                selected_messages = compact_messages(selected_messages, budget=self._budget, tools=selected_tools,
+                                                     target_units=self._history_target_units)
             estimated_after = self._budget.estimate(selected_messages, selected_tools)
         self.last_build_report = ContextBuildReport(
             reasoning_messages_omitted=len(reasoning),

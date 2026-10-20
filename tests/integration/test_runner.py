@@ -286,11 +286,12 @@ def test_repeated_skipped_or_denied_rounds_stop_before_iteration_limit(workspace
     runner = build_runner(workspace, provider)
     run = Run(goal="write a file", policy=UserPolicy(allow_write=False))
 
-    with pytest.raises(ModelRequestError, match="连续三轮只提出被跳过或未获授权的操作"):
-        asyncio.run(runner.run(run))
+    final = asyncio.run(runner.run(run))
 
     assert provider.calls == 3
-    assert run.status is RunStatus.FAILED
+    assert run.status is RunStatus.NEEDS_REVIEW
+    assert "未获授权" in final
+    assert run.messages[-1].metadata["recoverable"] is True
     assert [message.metadata["status"] for message in run.messages if message.role == "tool"] == [
         "denied", "denied", "denied",
     ]

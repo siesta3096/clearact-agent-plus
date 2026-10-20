@@ -26,12 +26,14 @@ class PreviewProjectTool:
             "page errors and a screenshot. Interactions need a unique visible selector. Returns current text and "
             "visible controls with selectors even after failed steps. Use expect_selector for a specific state "
             "region so stale status text cannot satisfy an ending assertion. Each call starts fresh; put a "
-            "sequence in one steps array. Set expect_text on each step to assert its intermediate state."
+            "sequence in one steps array. Text assertions wait up to 3 seconds for asynchronous rendering; "
+            "the sequence stops at the first failed assertion. Optional wait_ms pauses after an action."
         ), parameters={"type": "object", "properties": {
             "entry": {"type": "string", "default": "index.html"},
             "steps": {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {
                 "selector": {"type": "string"}, "action": {"type": "string", "enum": ["click", "press", "fill"]},
                 "value": {"type": "string"}, "expect_text": {"type": "string"},
+                "wait_ms": {"type": "integer", "minimum": 0, "maximum": 2000, "default": 0},
                 "expect_selector": {"type": "string", "description": "Unique region to assert; default body."},
             }, "required": ["selector", "action"]}},
             "expect_text": {"type": "string", "description": "Text that must be visible after the steps."},
@@ -57,8 +59,12 @@ class PreviewProjectTool:
                     or not isinstance(step.get("expect_text", ""), str)
                     or len(step.get("expect_text", "")) > 2000
                     or not isinstance(step.get("expect_selector", "body"), str)
-                    or not 1 <= len(step.get("expect_selector", "body")) <= 500):
+                    or not 1 <= len(step.get("expect_selector", "body")) <= 500
+                    or type(step.get("wait_ms", 0)) is not int
+                    or not 0 <= step.get("wait_ms", 0) <= 2000):
                 raise ToolValidationError("Invalid preview interaction")
+        if sum(step.get("wait_ms", 0) for step in steps) > 10000:
+            raise ToolValidationError("Total preview wait_ms must not exceed 10000")
 
         class StaticHandler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -95,7 +101,7 @@ class PreviewProjectTool:
                 except (OSError, ValueError):
                     self.send_error(404)
 
-        from playwright.async_api import Error, async_playwright
+        from playwright.async_api import Error, async_playwright, expect
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), StaticHandler)
         server.daemon_threads = True
@@ -150,14 +156,25 @@ class PreviewProjectTool:
                             else:
                                 await node.press(step.get("value", "Enter"), timeout=3000)
                             completed_steps += 1
-                            if (step.get("expect_text")
-                                    and step["expect_text"] not in await page.locator(
-                                        step.get("expect_selector", "body")
-                                    ).inner_text(timeout=3000)):
-                                failures.append("Expected text missing after interaction: " + step["expect_text"][:200])
+                            if step.get("wait_ms"):
+                                await page.wait_for_timeout(step["wait_ms"])
+                            if step.get("expect_text"):
+                                try:
+                                    await expect(page.locator(step.get("expect_selector", "body"))).to_contain_text(
+                                        step["expect_text"], timeout=3000, use_inner_text=True,
+                                    )
+                                except AssertionError:
+                                    failures.append("Expected text missing after interaction: "
+                                                    + step["expect_text"][:200])
+                                    break
+                        if expected and not failures:
+                            try:
+                                await expect(page.locator(expected_selector)).to_contain_text(
+                                    expected, timeout=3000, use_inner_text=True,
+                                )
+                            except AssertionError:
+                                failures.append("Expected final text missing: " + expected[:200])
                         text = await page.locator("body").inner_text(timeout=3000)
-                        if expected and expected not in await page.locator(expected_selector).inner_text(timeout=3000):
-                            failures.append("Expected final text missing: " + expected[:200])
                     except Error as exc:
                         failures.append(str(exc)[:1600])
                         try:

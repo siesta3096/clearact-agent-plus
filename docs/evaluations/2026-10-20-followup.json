@@ -1,0 +1,143 @@
+{
+  "version": "0.3.4",
+  "model": "qwen/qwen3.8-27b",
+  "limits": "One recorded incident in isolated copies. Untuned stochastic model; intermediate runs overlapped regression checks. One request cancelled by a 240-second harness deadline has unknown full usage. The later completion is a separate resume, not an uninterrupted success.",
+  "phases": [
+    {
+      "phase": "intermediate",
+      "cases": [
+        {
+          "case": "status_before_work",
+          "status": "needs_review",
+          "mode": "discuss",
+          "elapsed_seconds": 12.75,
+          "model_calls": 2,
+          "input_tokens": 3142,
+          "output_tokens": 577,
+          "tools": {
+            "list_files": 1
+          },
+          "files_unchanged": true,
+          "error_type": null,
+          "completed_responses": 2,
+          "reasoning_characters_returned": 1849,
+          "max_generation_seconds": 7.312
+        },
+        {
+          "case": "status_after_failure",
+          "status": "needs_review",
+          "mode": "discuss",
+          "elapsed_seconds": 36.718,
+          "model_calls": 4,
+          "input_tokens": 23095,
+          "output_tokens": 1188,
+          "tools": {
+            "list_files": 1,
+            "read_file": 3,
+            "check_files": 1
+          },
+          "files_unchanged": true,
+          "error_type": null,
+          "completed_responses": 4,
+          "reasoning_characters_returned": 1888,
+          "max_generation_seconds": 11.438,
+          "semantic_check": "failed: model claimed complete despite failed browser checks; mode/immutability alone was insufficient"
+        },
+        {
+          "case": "continue_after_failure",
+          "status": "needs_review",
+          "mode": "develop",
+          "elapsed_seconds": 60.203,
+          "model_calls": 7,
+          "input_tokens": 59235,
+          "output_tokens": 1330,
+          "tools": {
+            "read_file": 9
+          },
+          "files_unchanged": true,
+          "error_type": null,
+          "completed_responses": 7,
+          "reasoning_characters_returned": 3068,
+          "max_generation_seconds": 13.281
+        }
+      ],
+      "native_browser_branch": {
+        "passed": true,
+        "steps_completed": 13
+      },
+      "original_unchanged": true
+    },
+    {
+      "phase": "working_set_retest",
+      "cases": [
+        {
+          "case": "status_before_work",
+          "status": "needs_review",
+          "mode": "discuss",
+          "elapsed_seconds": 0.015,
+          "model_calls": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "tools": {},
+          "files_unchanged": true,
+          "error_type": null,
+          "completed_responses": 0,
+          "reasoning_characters_returned": 0,
+          "max_generation_seconds": 0,
+          "semantic_check": "passed: deterministic recorded_status with unresolved checks, no model call"
+        },
+        {
+          "case": "status_after_failure",
+          "status": "needs_review",
+          "mode": "discuss",
+          "elapsed_seconds": 0.016,
+          "model_calls": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "tools": {},
+          "files_unchanged": true,
+          "error_type": null,
+          "completed_responses": 0,
+          "reasoning_characters_returned": 0,
+          "max_generation_seconds": 0,
+          "semantic_check": "passed: deterministic recorded_status with unresolved checks, no model call"
+        },
+        {
+          "case": "continue_after_failure",
+          "status": "cancelled",
+          "mode": "develop",
+          "elapsed_seconds": 240.016,
+          "model_calls": 6,
+          "input_tokens": 55747,
+          "output_tokens": 10367,
+          "tools": {
+            "read_file": 3,
+            "check_files": 1,
+            "edit_file": 2,
+            "preview_project": 1
+          },
+          "files_unchanged": false,
+          "error_type": "TimeoutError",
+          "completed_responses": 5,
+          "reasoning_characters_returned": 35480,
+          "max_generation_seconds": 106.36
+        }
+      ],
+      "native_browser_branch": {
+        "passed": true,
+        "steps_completed": 13
+      },
+      "original_unchanged": true
+    },
+    {
+      "phase": "resume_after_harness_timeout",
+      "status": "completed",
+      "elapsed_seconds": 57.672,
+      "model_calls": 2,
+      "input_tokens": 31588,
+      "output_tokens": 1929,
+      "error_type": null,
+      "delivery_passed": true
+    }
+  ]
+}

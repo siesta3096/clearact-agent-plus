@@ -9,6 +9,7 @@ from clearact.domain.errors import ScopeViolationError, ToolValidationError
 from clearact.storage.snapshots import SnapshotStore
 from clearact.tools.base import ToolContext
 from clearact.tools.development import CheckFilesTool, EditFileTool, SearchFilesTool
+from clearact.tools.filesystem import ReadFileTool
 
 
 def context(root):
@@ -24,6 +25,21 @@ def test_search_returns_source_lines_and_skips_secrets_dependencies_binary(works
     result = asyncio.run(SearchFilesTool().execute({"query": "needle"}, context(workspace), "search"))
     assert [(item["path"], item["line"]) for item in result.metadata["matches"]] == [("app.py", 1), ("app.py", 2)]
     assert "secret" not in result.content
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_search_offset_can_read_the_matching_line_with_unicode_and_crlf(workspace, newline):
+    (workspace / "game.js").write_bytes(newline.join(["// 中文背景", "", "function advance(){", "}"]).encode())
+
+    async def check():
+        result = await SearchFilesTool().execute({"query": "function advance"}, context(workspace), "locate")
+        match = result.metadata["matches"][0]
+        assert match["line"] == 3
+        read = await ReadFileTool().execute({"path": match["path"], "offset": match["offset"], "max_chars": 50},
+                                             context(workspace), "read_match")
+        assert read.content == "function advance(){\n}"
+
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize("mutation", ["ambiguous", "stale", "missing"])

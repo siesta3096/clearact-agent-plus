@@ -27,7 +27,8 @@ class SearchFilesTool(_FilesystemTool):
 
     def definition(self) -> ToolDefinition:
         return ToolDefinition(name=self.name, description=(
-            "Find literal text in workspace code with file paths and line numbers. Skips dependencies and binary files."
+            "Find literal text in workspace code. Returns line numbers and character offsets for read_file; "
+            "offset is not a line number. Skips dependencies and binary files."
         ), parameters={"type": "object", "properties": {
             "query": {"type": "string"}, "path": {"type": "string", "default": "."},
             "glob": {"type": "string", "default": "*"},
@@ -74,18 +75,24 @@ class SearchFilesTool(_FilesystemTool):
                 except (OSError, UnicodeError):
                     skipped += 1
                     continue
-                for number, line in enumerate(text.splitlines(), 1):
+                offset = 0
+                # Match the universal-newline view used by read_file, including CRLF files.
+                normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+                for number, raw_line in enumerate(normalized.splitlines(keepends=True), 1):
+                    line = raw_line.rstrip("\r\n")
                     if needle in (line if sensitive else line.casefold()):
                         matches.append({"path": target.relative_to(context.workspace_root).as_posix(),
-                                        "line": number, "text": line[:500]})
+                                        "line": number, "offset": offset, "text": line[:500]})
                         if len(matches) >= 100:
                             truncated = True
                             break
+                    offset += len(raw_line)
                 if truncated:
                     break
             if truncated:
                 break
-        content = "\n".join(f"{item['path']}:{item['line']}: {item['text']}" for item in matches)
+        content = "\n".join(f"{item['path']}:{item['line']} (read_file offset={item['offset']}): {item['text']}"
+                            for item in matches)
         return ToolResult(action_id=action_id, tool_name=self.name, ok=True,
                           content=content or "No matching text found.",
                           metadata={"matches": matches, "inspected_files": min(inspected, 1000),
@@ -236,7 +243,10 @@ class CheckFilesTool(_FilesystemTool):
                         raise ToolValidationError((stderr or stdout).decode("utf-8", errors="replace")[:1600])
                     coverage = "JavaScript syntax via Node --check (no source execution)"
                 else:
-                    raise ToolValidationError("Unsupported static check format; use an approved test command")
+                    raise ToolValidationError(
+                        "Unsupported static check format; do not repeat this check. "
+                        "For CSS/web behavior use preview_project; otherwise use an approved test command."
+                    )
                 if self._resolve(context, raw) != target:
                     raise ToolValidationError("Target path changed during verification")
                 with target.open("rb") as handle:

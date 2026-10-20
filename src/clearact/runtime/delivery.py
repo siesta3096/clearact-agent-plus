@@ -19,7 +19,7 @@ def _affirmative_text(text: str) -> str:
 def is_status_inquiry(text: str) -> bool:
     text = text.strip().rstrip("?？!！。.").strip().casefold()
     return bool(re.fullmatch(
-        r"(?:(?:请问|你|现在|已经|都|到底|这个任务|任务|项目|游戏|代码)\s*)*"
+        r"(?:(?:请问|你的|我的|这个|这项|这次|你|现在|目前|已经|都|到底|任务|项目|游戏|代码)\s*)*"
         r"(?:(?:做[完好]|写[完好]|弄好|完成|实现完|结束)(?:了)?(?:吗|么|没(?:有)?|了没|了没有)|"
         r"进度(?:如何|怎么样|到哪了)|做到哪了|还有多久)|"
         r"(?:are you|is it|is (?:the )?(?:task|project|game)) (?:done|finished|ready)(?: yet)?|"
@@ -126,6 +126,69 @@ def development_guidance(contract: TaskContract, workspace: Path) -> str:
         "When tests are requested, run actual tests or asserted browser interactions; syntax alone is insufficient. "
         "Only actual saved files and successful checks establish delivery. Report remaining limits briefly."
     )
+
+
+def status_summary(run: Run, context: ToolContext) -> tuple[str, bool]:
+    """Answer a pure status question from recorded actions and current hashes, without model claims."""
+    boundary = run.task_contract.turn_start
+    history = run.messages[:boundary]
+    actions = {action.id: action for message in history for action in message.tool_calls}
+    writes = [(index, message) for index, message in enumerate(history)
+              if message.role == "tool" and message.name in FILE_WRITE_TOOLS
+              and message.metadata.get("status") == "succeeded" and message.tool_call_id in actions
+              and actions[message.tool_call_id].tool_name == message.name]
+    english = run.execution.interface_language == "en"
+    if not writes:
+        expects_files = any(item.kind == "files" for item in run.workflow_plan) or any(
+            re.search(r"创建|创造|开发|写入|保存|生成.*文件|\b(?:create|build|write|save)\b",
+                      message.content or "", re.I)
+            for message in history if message.role == "user"
+        )
+        if not expects_files:
+            last = next((message.content or "" for message in reversed(history)
+                         if message.role == "assistant" and not message.tool_calls), "")
+            failed = last.startswith(("任务执行失败", "Task failed")) or any(
+                message.role == "tool" and message.metadata.get("status") in {"failed", "denied"}
+                for message in history[-6:]
+            )
+            return (("Latest recorded reply:\n" if english else "最近一次记录的回复：\n") + last[:1500], failed)
+        return (("Not completed: no successful file delivery is recorded. No work was restarted."
+                 if english else "原任务尚未完成：记录中没有成功写入的文件。本次仅查询进度，没有重新执行。"), True)
+    if not run.policy.allow_read or run.policy.capability_rules.get("local_read", "allow") != "allow":
+        return (("File writes are recorded, but current permissions prevent verifying them."
+                 if english else "已有文件写入记录，但当前读取权限不足，尚未核对文件现状。"), True)
+    last_write = writes[-1][0]
+    turn = next((index for index in range(last_write, -1, -1) if history[index].role == "user"), -1)
+    snapshot = run.model_copy(update={
+        "messages": history, "task_contract": TaskContract(mode="develop", turn_start=turn),
+    })
+    report = evaluate_delivery(snapshot, context)
+    names = [file.path for file in report.files]
+    passed = report.passed
+    title = ("Recorded delivery checks passed." if passed else "The task still needs review.") if english else (
+        "已写文件通过记录中的交付检查。" if passed else "原任务尚未完成验收。"
+    )
+    files = ("\nVerified files: " if english else "\n已核对文件：") + (
+        ", ".join(names) or ("none" if english else "无")
+    )
+    problems = [check.detail for check in report.checks if not check.passed]
+    # Keep concrete failed test details, including unsupported checks, without copying whole tool output.
+    latest_checks = {}
+    for message in history[turn + 1:]:
+        if message.role == "tool" and message.name in {"check_files", "preview_project"}:
+            latest_checks[message.name] = message
+    if not passed:
+        for name, message in latest_checks.items():
+            if message.metadata.get("status") != "failed":
+                continue
+            details = message.metadata.get("failures", []) if name == "preview_project" else [
+                item.get("detail", "") for item in message.metadata.get("checks", []) if not item.get("passed")
+            ]
+            problems.extend(str(detail).split("\n", 1)[0][:180] for detail in details[:2])
+    detail = ("\nOutstanding: " if english else "\n待核对：") + "；".join(dict.fromkeys(problems)) if problems else ""
+    note = ("\nThis was a status query; no files were changed or tests rerun." if english else
+            "\n本次仅查询进度，未修改文件、未重新执行测试。")
+    return title + files + detail + note, not passed
 
 
 def development_state(run: Run, workspace: Path) -> str:
