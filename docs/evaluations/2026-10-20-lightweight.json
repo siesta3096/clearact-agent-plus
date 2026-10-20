@@ -1,0 +1,70 @@
+{
+  "baseline_commit": "f1747b8578ab22b046745f2c1dbe7c9883060bfd",
+  "before": {
+    "version": "0.3.1",
+    "metric": "conservative UTF-8 request units, not tokenizer tokens",
+    "system_prompt_characters": 2925,
+    "scenarios": {
+      "returned_thinking": {
+        "input_estimated_units": 35476,
+        "messages_sent": 7,
+        "messages_recorded": 7,
+        "reasoning_characters_sent": 16000
+      },
+      "long_tool_history": {
+        "input_estimated_units": 59186,
+        "messages_sent": 43,
+        "messages_recorded": 43,
+        "reasoning_characters_sent": 0
+      }
+    },
+    "model_requests_sent": 0
+  },
+  "after": {
+    "version": "0.3.2",
+    "metric": "conservative UTF-8 request units, not tokenizer tokens",
+    "system_prompt_characters": 1138,
+    "scenarios": {
+      "returned_thinking": {
+        "input_estimated_units": 17643,
+        "messages_sent": 7,
+        "messages_recorded": 7,
+        "reasoning_characters_sent": 0
+      },
+      "long_tool_history": {
+        "input_estimated_units": 24279,
+        "messages_sent": 13,
+        "messages_recorded": 43,
+        "reasoning_characters_sent": 0
+      }
+    },
+    "model_requests_sent": 0
+  },
+  "request_size_reduction_percent": {
+    "returned_thinking": 50.27,
+    "long_tool_history": 58.98
+  },
+  "saved_failure_replay": {
+    "run_id": "run_2e85fc876291",
+    "recorded_status": "failed",
+    "status_question_mode": "discuss",
+    "full_replay_failure": {
+      "estimated": 92645,
+      "limit": 80000
+    },
+    "automatic": {
+      "reasoning_messages_omitted": 6,
+      "reasoning_characters_omitted": 184521,
+      "estimated_before": 237000,
+      "estimated_after": 15690,
+      "history_messages_omitted": 4
+    },
+    "selected_estimated_units": 15690,
+    "limit": 80000,
+    "latest_action_ids_preserved": true,
+    "user_and_system_messages_preserved": true,
+    "original_record_unchanged": true,
+    "model_requests_sent": 0
+  },
+  "limits": "Offline request-size comparison; no actual model token usage or generation latency measurement."
+}

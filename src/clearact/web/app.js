@@ -588,8 +588,11 @@ function currentTurnEvents(detail) {
 function contextNoticeHtml(detail) {
   const event = [...currentTurnEvents(detail)].reverse().find((item) => item.type === "context.compacted");
   const count = event?.data?.reasoning_characters_omitted;
-  if (!Number.isFinite(count) || count <= 0) return "";
-  const note = language === "zh" ? `为继续执行，后续请求中已精简 ${count.toLocaleString()} 字符的已返回思考。原始对话、思考和工具结果仍保存在记录中。` : `${count.toLocaleString()} characters of returned thinking were omitted from the next request. Original messages, thinking and tool results remain in the record.`;
+  const history = event?.data?.history_messages_omitted;
+  const thinking = Number.isFinite(count) && count > 0 ? count : 0;
+  const omitted = Number.isFinite(history) && history > 0 ? history : 0;
+  if (!thinking && !omitted) return "";
+  const note = language === "zh" ? `后续请求已省略 ${thinking.toLocaleString()} 字符的历史思考、${omitted} 条旧过程消息。完整对话和工具结果仍保存在记录中。` : `Omitted ${thinking.toLocaleString()} thinking characters and ${omitted} old process messages from the request. Original messages and tool results remain in the record.`;
   return `<div class="connection-banner"><i></i><div><b>${language === "zh" ? "上下文已自动整理" : "Context compacted"}</b><small>${escape(note)}</small></div></div>`;
 }
 function connectionHtml(detail) {

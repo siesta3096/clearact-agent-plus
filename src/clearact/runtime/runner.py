@@ -207,27 +207,25 @@ class AgentRunner:
         # A follow-up may reuse an older plan; only audit phases planned in this turn.
         continuing_plan = continues_unfinished_plan(run)
         review_new_plan = not run.workflow_plan or continuing_plan
+        current_request = next((message.content or "" for message in reversed(run.messages)
+                                if message.role == "user"), run.goal)
 
         for iteration in range(self._max_iterations):
             definitions = self._registry.definitions()
-            if (not development and run.task_contract.mode != "discuss" and not run.workflow_plan
-                    and "declare_workflow_plan" in self._registry.names()):
-                definitions = [tool for tool in definitions if tool.name == "declare_workflow_plan"]
-            else:
-                definitions = [
-                    tool for tool in definitions
-                    if (tool.name != "declare_workflow_plan" or (development and not run.workflow_plan))
-                    and self._policy_tool_offered(run, tool.name)
-                    and self._web_tool_offered(run, tool.name)
-                    and (
-                        tool.name != "revise_workflow_plan"
-                        or (
-                            completion_review_instruction is None
-                            and (self._unreached_plan_items(run) or len(run.workflow_plan) < 12)
-                            and not self._plan_revision_without_new_result(run)
-                        )
+            definitions = [
+                tool for tool in definitions
+                if (tool.name != "declare_workflow_plan" or not run.workflow_plan)
+                and self._policy_tool_offered(run, tool.name)
+                and self._web_tool_offered(run, tool.name)
+                and (
+                    tool.name != "revise_workflow_plan"
+                    or (
+                        run.workflow_plan and completion_review_instruction is None
+                        and (self._unreached_plan_items(run) or len(run.workflow_plan) < 12)
+                        and not self._plan_revision_without_new_result(run)
                     )
-                ]
+                )
+            ]
             if development:
                 user_text = " ".join(
                     message.content or "" for message in run.messages if message.role == "user"
@@ -239,9 +237,9 @@ class AgentRunner:
                 definitions = [tool for tool in definitions if tool.name in {
                     "list_files", "read_file", "read_pdf", "search_files", "check_files", "web_search", "fetch_url",
                 }]
+            if _SIMPLE_CHAT.fullmatch(current_request):
+                definitions = []
             context_messages = [*run.messages]
-            current_request = next((message.content or "" for message in reversed(run.messages)
-                                    if message.role == "user"), run.goal)
             if is_status_inquiry(current_request):
                 context_messages.append(ChatMessage(role="system", content=(
                     "The user is asking for current status, not starting a new implementation. "
@@ -297,38 +295,30 @@ class AgentRunner:
                 context_messages.append(completion_review_instruction)
             messages, tools = self._context_builder.build(context_messages, definitions, recent_tool_names)
             report = self._context_builder.last_build_report
-            if report.reasoning_messages_omitted:
+            if report.reasoning_messages_omitted or report.history_messages_omitted:
                 english = run.execution.interface_language == "en"
                 await self._event_bus.publish(RunEvent(
                     type="context.compacted", run_id=run.id,
-                    title="Long returned thinking omitted from request" if english else "已精简后续请求中的长思考内容",
+                    title="Working context compacted" if english else "已精简后续请求的工作上下文",
                     detail=("Original messages, tool calls and results remain in the run record." if english else
                             "原始对话、完整思考内容、工具调用与结果仍保存在任务记录中。"),
-                    data={**report.__dict__, "reasoning_history": "auto"},
+                    data=report.__dict__,
                 ))
             # Freeze the provider's input view: an uncompacted build may return
             # the mutable run.messages list, which grows as tools finish.
             messages = list(messages)
             response = await self._chat_with_retries(run, messages, tools)
             response = await self._finish_truncated_response(run, messages, response)
-            if (not development and run.task_contract.mode != "discuss" and not run.workflow_plan
-                    and "declare_workflow_plan" in self._registry.names()):
-                if not response.tool_calls and (response.content or "").strip() and _SIMPLE_CHAT.fullmatch(run.goal):
-                    # A greeting needs no plan/tool round trips. Show one honest
-                    # visible phase instead of rejecting a normal chat reply.
-                    run.workflow_plan = [
-                        WorkflowPlanItem(id="reply", title="直接回复", summary="简单对话，无需调用工具。")
-                    ]
-                    active_step = run.workflow_steps[-1]
-                    active_step.title = "直接回复"
-                    active_step.summary = "简单对话，无需调用工具。"
-                    active_step.plan_item_id = "reply"
-                elif not response.tool_calls or any(
-                    action.tool_name != "declare_workflow_plan" for action in response.tool_calls
-                ):
-                    raise ModelRequestError(
-                        "模型没有按要求返回任务步骤。请确认所选模型支持工具调用，或更换模型后重试。"
-                    )
+            if (not run.workflow_plan and _SIMPLE_CHAT.fullmatch(current_request)
+                    and not response.tool_calls and (response.content or "").strip()):
+                # A local display marker needs no extra model round trip.
+                run.workflow_plan = [
+                    WorkflowPlanItem(id="reply", title="直接回复", summary="简单对话，无需调用工具。")
+                ]
+                active_step = run.workflow_steps[-1]
+                active_step.title = "直接回复"
+                active_step.summary = "简单对话，无需调用工具。"
+                active_step.plan_item_id = "reply"
             reasoning = (response.reasoning_content or "").strip() or None
             if not response.tool_calls:
                 if not (response.content or "").strip():
@@ -348,6 +338,17 @@ class AgentRunner:
                 unworked = self._unworked_phase_titles(run, passed_phases)
                 failed_checks = [f"{item.phase_title}：{item.detail}" for item in run.completion_checks
                                  if item.status != "passed"]
+                if run.task_contract.mode == "execute" and run.task_contract.expected_paths:
+                    current = run.messages[run.task_contract.turn_start + 1:]
+                    calls = {action.id for message in current for action in message.tool_calls}
+                    written = {Path(message.metadata["path"]).resolve() for message in current
+                               if message.role == "tool" and message.name in FILE_WRITE_TOOLS
+                               and message.tool_call_id in calls and message.metadata.get("status") == "succeeded"
+                               and isinstance(message.metadata.get("path"), str)}
+                    missing_requests = [path for path in run.task_contract.expected_paths
+                                        if (self._tool_context.workspace_root / path).resolve() not in written]
+                    if missing_requests:
+                        failed_checks.append("Requested files not written: " + ", ".join(missing_requests))
                 if run.delivery_report:
                     failed_checks.extend(f"{item.title}：{item.detail}" for item in run.delivery_report.checks
                                          if not item.passed)

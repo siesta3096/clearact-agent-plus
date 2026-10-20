@@ -9,8 +9,6 @@ from clearact.domain.models import DeliveryCheck, DeliveryFile, DeliveryReport, 
 from clearact.tools.artifacts import FILE_WRITE_TOOLS, MAX_ARTIFACT_BYTES
 from clearact.tools.base import ToolContext
 
-SOURCE_SUFFIXES = {".html", ".css", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".py", ".json", ".vue", ".go", ".rs"}
-
 
 def _affirmative_text(text: str) -> str:
     text = re.sub(r"```[\s\S]*?```|`[^`]*`|[“\"][^”\"]*[”\"]", "", text).casefold()
@@ -83,7 +81,9 @@ def infer_contract(run: Run) -> TaskContract:
     creating = bool(re.search(r"空(?:的)?(?:文件夹|目录)|从零|创建|创造|搭建|制作|新建|"
                              r"\b(?:empty|new project|from scratch|create|build)\b", _affirmative_text(history)))
     paths = []
-    for match in re.finditer(r"(?<![\w./\\])(?:[\w.-]+/)*[\w.-]+\.(?:html|css|js|mjs|ts|tsx|py|json|vue)\b", current):
+    for match in re.finditer(
+        r"(?<![\w./\\])(?:[\w.-]+/)*[\w.-]+\.(?:html|css|js|mjs|ts|tsx|py|json|vue|md|txt)\b", current,
+    ):
         prefix = re.split(r"[，,。;；\n]", current[:match.start()])[-1].casefold()
         if not _affirmative_text(prefix).strip():
             continue
@@ -100,28 +100,13 @@ def infer_contract(run: Run) -> TaskContract:
 def development_guidance(contract: TaskContract, workspace: Path) -> str:
     if contract.mode != "develop":
         return ""
-    project = (
-        "For a new project, separate entry point, presentation, behavior and domain data into suitable files. "
-        "Create README.md with run/test instructions and ARCHITECTURE.md describing modules, dependencies "
-        "and data flow. Avoid unnecessary frameworks. " if contract.project_creation else ""
-    )
     return (
-        f"Development task in {workspace}. Inspect the existing workspace before changing it. "
-        "Use the offered file and command tools to implement the project on disk. Planning tools are "
-        "optional progress aids; task tools are usable immediately. A code block or instructions for the "
-        "user to save code do not deliver files. Make reasonable implementation decisions and continue "
-        "until delivered or a concrete blocker exists. " + project +
-        "Read the relevant files, search for existing behavior, edit narrowly, use check_files for supported "
-        "syntax/dependency checks, preview_project for local browser checks and execute_command for real tests, fix "
-        "failures and recheck after the final edit. Commands still require the configured approval. "
-        "For a new HTML project, preview_project must open the entry and exercise at least one interaction "
-        "with an expected-text assertion. When tests are requested, run real tests or asserted browser interactions; "
-        "syntax checks alone do not satisfy that request. "
-        "Finish with actual changed paths, what each part does, checks performed and remaining limits. "
-        "Runtime completion requires recorded workspace inspection, unchanged written files and "
-        "successful verification after the last edit; static checks do not prove gameplay or test behavior. "
-        "Do not claim unavailable tools without inspecting "
-        "the current offered tools."
+        f"Development workspace: {workspace}. Inspect before editing and deliver files with the available "
+        "write_file/edit_file tools. Keep changes and structure proportional to the request; do not add "
+        "extra files, architecture documents or progress phases just to satisfy a template. "
+        "Verify after the final edit using check_files, preview_project or an approved test command. "
+        "When tests are requested, run actual tests or asserted browser interactions; syntax alone is insufficient. "
+        "Only actual saved files and successful checks establish delivery. Report remaining limits briefly."
     )
 
 
@@ -173,7 +158,6 @@ def evaluate_delivery(run: Run, context: ToolContext) -> DeliveryReport | None:
         if message.name in FILE_WRITE_TOOLS and isinstance(message.metadata.get("path"), str):
             last_writes[message.metadata["path"]] = (index, message)
     files = []
-    nonempty_paths = set()
     issues = []
     last_edit = max((index for index, _ in last_writes.values()), default=-1)
     for path, (_, message) in last_writes.items():
@@ -202,8 +186,6 @@ def evaluate_delivery(run: Run, context: ToolContext) -> DeliveryReport | None:
                 issues.append(f"写入后内容发生变化：{target.name}")
                 continue
             relative = target.relative_to(context.workspace_root).as_posix()
-            if data.strip():
-                nonempty_paths.add(relative.casefold())
             files.append(DeliveryFile(path=relative,
                                       action_id=message.tool_call_id, sha256=actual, size_bytes=len(data),
                                       change="modified" if message.metadata.get("existed") else "created"))
@@ -223,15 +205,6 @@ def evaluate_delivery(run: Run, context: ToolContext) -> DeliveryReport | None:
     if missing:
         checks.append(DeliveryCheck(key="requested_paths", title="指定文件", passed=False,
                                     detail="未交付本轮指定文件：" + ", ".join(missing)))
-    if contract.project_creation:
-        source_count = sum(Path(item.path).suffix.lower() in SOURCE_SUFFIXES
-                           and item.path.casefold() in nonempty_paths for item in files)
-        names = nonempty_paths
-        docs = "readme.md" in names and bool(names & {"architecture.md", "docs/architecture.md"})
-        checks.append(DeliveryCheck(key="structure", title="模块与架构说明", passed=source_count >= 2 and docs,
-                                    detail=f"本轮源文件 {source_count} 个；" + (
-                                        "已有运行说明与架构文档。" if docs else "需交付 README.md 和 ARCHITECTURE.md。"
-                                    )))
     def verification_call(action) -> bool:
         argv = action.arguments.get("command", [])
         if not isinstance(argv, list):
@@ -266,10 +239,6 @@ def evaluate_delivery(run: Run, context: ToolContext) -> DeliveryReport | None:
                       and message.name == "preview_project"]
     exercised = any(message.metadata.get("steps_completed", 0) and message.metadata.get("assertions", 0)
                     for message in browser_checks)
-    if contract.project_creation and any(Path(file.path).suffix.lower() == ".html" for file in files):
-        checks.append(DeliveryCheck(key="browser", title="网页实际交互", passed=exercised,
-                                    detail="已有浏览器交互与文本断言记录。" if exercised else
-                                    "新网页项目需要 preview_project 实际打开并完成带文本断言的交互。"))
     if contract.require_tests:
         tested = exercised or any(message.tool_call_id in verified and message.name == "execute_command"
                                   and re.search(r"pytest|unittest|vitest|(?:^|[ /\\])tests?(?:[ /\\_.-]|$)",
@@ -324,9 +293,7 @@ def delivery_summary(run: Run) -> str:
         note += "\n\n" + warning
     names = {file.path.casefold() for file in files}
     if "readme.md" in names:
-        note += ("\n\nSee README.md for run instructions and the architecture document for module responsibilities."
-                 if english else
-                 "\n\n运行方式见 README.md；模块职责与数据流见架构文档。")
+        note += "\n\nSee README.md for run instructions." if english else "\n\n运行方式见 README.md。"
     return title + ("\n\nFiles written this turn:\n" if english else "\n\n本轮实际写入：\n") + paths + (
         "\n\nRecorded checks:\n" if english else "\n\n检查记录：\n"
     ) + checks + note

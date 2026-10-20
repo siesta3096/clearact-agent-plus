@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2 — 2026-10-20
+
+- Record the author's original simplicity, lightweight operation and context-efficiency principles.
+- Make planning optional for general tasks as well as development. Permit direct answers and immediate
+  work; omit tool schemas for greetings, while preserving optional plans and their completion checks.
+- Omit returned reasoning from request copies by default, including below the hard budget; preserve
+  complete local records and the `reasoningHistory: full` override. Compact old process transactions at
+  a soft 32,000-unit target while retaining user constraints and the latest complete tool transaction.
+- Shorten general and development guidance. Remove blanket source-count, architecture-document and
+  new-HTML browser-interaction requirements; retain real-file delivery, post-edit verification and
+  explicit file/test requirements. Check explicit text-file delivery even without a plan.
+- Add deterministic request-size measurements, small-task regressions and current-turn history notices.
+  See [maintenance and measurement](docs/maintenance-2026-10-20-lightweight.md).
+
 ## 0.3.1 — 2026-10-20
 
 - Prevent long returned thinking from blocking the next tool round: when over budget, omit

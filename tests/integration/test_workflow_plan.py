@@ -77,7 +77,7 @@ def build_runner(root: Path, provider: ScriptedProvider, *, max_iterations: int 
     )
 
 
-def test_plan_is_required_then_phase_is_revealed_when_work_begins(workspace):
+def test_optional_plan_still_reveals_phases_and_audits_declared_work(workspace):
     plan = Action(
         id="plan_call",
         tool_name="declare_workflow_plan",
@@ -124,7 +124,8 @@ def test_plan_is_required_then_phase_is_revealed_when_work_begins(workspace):
 
     assert final == "done"
     assert run.status is RunStatus.COMPLETED
-    assert provider.offered_tools[0] == ["declare_workflow_plan"]
+    assert "web_search" in provider.offered_tools[0]
+    assert "declare_workflow_plan" in provider.offered_tools[0]
     assert "web_search" in provider.offered_tools[1]
     assert [item.id for item in run.workflow_plan] == ["sources", "conclusion"]
     assert [step.title for step in run.workflow_steps] == ["理解与拆解任务", "核验资料", "形成结论"]
@@ -157,8 +158,9 @@ def test_invalid_initial_plan_is_retried_instead_of_becoming_generic(workspace):
 
     asyncio.run(build_runner(workspace, provider, max_iterations=4).run(run))
 
-    assert provider.offered_tools[0] == ["declare_workflow_plan"]
-    assert provider.offered_tools[1] == ["declare_workflow_plan"]
+    assert "declare_workflow_plan" in provider.offered_tools[0]
+    assert "declare_workflow_plan" in provider.offered_tools[1]
+    assert "web_search" in provider.offered_tools[1]
     assert [item.id for item in run.workflow_plan] == ["draft"]
     results = {message.tool_call_id: message for message in run.messages if message.role == "tool"}
     assert results["invalid_plan"].metadata["status"] == "failed"
@@ -494,14 +496,13 @@ def test_phase_title_recovers_missing_id_but_rejects_unknown_phase(workspace):
     assert ad_hoc.workflow_steps[-1].plan_item_id is None
 
 
-def test_model_without_tool_calls_cannot_mark_unplanned_task_complete(workspace):
-    provider = ScriptedProvider([LLMResponse(content="I will work on it.")])
-    run = Run(goal="create a report")
-
-    with pytest.raises(ModelRequestError, match="支持工具调用"):
-        asyncio.run(build_runner(workspace, provider).run(run))
-
-    assert run.status is RunStatus.FAILED
+def test_simple_question_can_be_answered_without_planning_or_tool_calls(workspace):
+    provider = ScriptedProvider([LLMResponse(content="4")])
+    run = Run(goal="2 + 2 等于多少？")
+    assert asyncio.run(build_runner(workspace, provider).run(run)) == "4"
+    assert run.status is RunStatus.COMPLETED
+    assert len(provider.offered_tools) == 1
+    assert run.workflow_plan == []
 
 
 def test_simple_greeting_can_reply_without_forcing_a_tool_call(workspace):
@@ -515,6 +516,7 @@ def test_simple_greeting_can_reply_without_forcing_a_tool_call(workspace):
     assert [step.title for step in run.workflow_steps] == ["直接回复"]
     assert [item.id for item in run.workflow_plan] == ["reply"]
     assert len(provider.offered_tools) == 1
+    assert provider.offered_tools[0] == []
 
 
 def test_completion_check_only_inspects_files_written_since_latest_user_turn(workspace):

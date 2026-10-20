@@ -37,6 +37,7 @@ def compact_messages(
     *,
     budget: ContextBudget | None = None,
     tools: list[ToolDefinition] | None = None,
+    target_units: int | None = None,
 ) -> list[ChatMessage]:
     """Retain essential messages and recent complete transactions within budget.
 
@@ -44,6 +45,8 @@ def compact_messages(
     are never shortened or split. An intermediate user request may contain an
     enduring constraint, so only older assistant/tool content can be omitted.
     Omitted content is not promoted into a fabricated system summary.
+    A target_units value is a soft working-context target; essential messages may
+    exceed it provided they still fit the actual budget.
     """
     if keep_recent < 1:
         raise ValueError("keep_recent must be at least one transaction.")
@@ -64,8 +67,9 @@ def compact_messages(
     if budget is None:
         return result
     definitions = tools or []
+    target = min(budget.limit, target_units) if target_units is not None else budget.limit
     for index in sorted(selected - required):
-        if not budget.exceeds(result, definitions):
+        if budget.estimate(result, definitions) <= target:
             return result
         selected.remove(index)
         result = retained_messages()

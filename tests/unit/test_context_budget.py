@@ -55,16 +55,54 @@ def test_long_latest_thinking_is_omitted_without_losing_tool_transaction_or_ledg
     assert builder.last_build_report.reasoning_characters_omitted == len(transaction[0].reasoning_content)
 
 
-def test_reasoning_is_retained_when_it_fits_and_report_resets():
+def test_reasoning_is_omitted_even_when_it_fits_and_report_resets():
     builder = ContextBuilder(ContextBudget(4096, .8))
     transaction = tool_transaction()
     transaction[0].reasoning_content = "x" * 10_000
     builder.build(transaction, [], set())
     transaction[0].reasoning_content = "small returned thinking"
     selected, _ = builder.build(transaction, [], set())
+    assert selected[0].reasoning_content is None
+    assert transaction[0].reasoning_content == "small returned thinking"
+    assert builder.last_build_report.reasoning_messages_omitted == 1
+    transaction[0].reasoning_content = None
+    selected, _ = builder.build(transaction, [], set())
     assert selected[0] is transaction[0]
-    assert selected[0].reasoning_content == "small returned thinking"
     assert builder.last_build_report.reasoning_messages_omitted == 0
+
+
+def test_history_is_bounded_before_reaching_the_hard_context_limit():
+    messages = [ChatMessage(role="system", content="Rules"),
+                ChatMessage(role="user", content="Do not overwrite originals.")]
+    for index in range(20):
+        messages += tool_transaction(text="r" * 2000, prefix=f"read_{index}")
+    messages.append(ChatMessage(role="user", content="Continue with those constraints."))
+    before = [message.model_dump() for message in messages]
+    budget = ContextBudget(128000, .8)
+    builder = ContextBuilder(budget, history_target_units=8000)
+    assert not budget.exceeds(messages, [])
+    selected, _ = builder.build(messages, [], set())
+    assert budget.estimate(selected, []) <= 8000
+    assert [message for message in selected if message.role in {"user", "system"}] == [
+        messages[0], messages[1], messages[-1],
+    ]
+    assert messages[-3:-1] == selected[-3:-1]
+    assert builder.last_build_report.history_messages_omitted > 0
+    assert [message.model_dump() for message in messages] == before
+
+
+def test_required_transaction_may_exceed_soft_target_without_being_cut_or_rejected():
+    messages = [ChatMessage(role="user", content="Keep the actual result"),
+                *tool_transaction(text="large required result" * 1000)]
+    selected, _ = ContextBuilder(ContextBudget(128000, .8), history_target_units=4000).build(messages, [], set())
+    assert selected == messages
+
+
+def test_full_mode_retains_small_reasoning_and_unchanged_message_identity():
+    messages = tool_transaction()
+    messages[0].reasoning_content = "Required replay"
+    selected, _ = ContextBuilder(ContextBudget(4096, .8), reasoning_history="full").build(messages, [], set())
+    assert selected[0] is messages[0]
 
 
 def test_full_reasoning_replay_mode_does_not_silently_strip_required_fields():
